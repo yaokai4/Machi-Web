@@ -10,12 +10,12 @@
   },
   "contract": {
     "version": 2,
-    "sha256": "94450a119b43c2fa02df0ac661ecba79b2e078a18aa8803a8ef08760e35313e7"
+    "sha256": "0394472750685b905c13bdc7f80a433b0fd89274ac4b0c52d44362c62bfa0ae8"
   },
   "evidenceCounts": {
     "raw": 1039,
-    "sanitized": 1039,
-    "unique": 1039,
+    "sanitized": 0,
+    "unique": 0,
     "verified": 0,
     "approved": 0,
     "staged": 0
@@ -32,7 +32,7 @@
     },
     "legacyGroupedItems": 111,
     "legacyUniqueGroups": 34,
-    "v2UniqueGroupIds": 34,
+    "v2UniqueGroupIds": 0,
     "missingOfficialN1LexQtypes": [],
     "declaredStatsMatchObserved": true
   },
@@ -41,12 +41,15 @@
     "identityConflicts": 0
   },
   "rejections": {
-    "count": 0,
-    "byReason": {}
+    "count": 1039,
+    "byReason": {
+      "atomic_group_rejected": 111,
+      "explanation_structure": 1039
+    }
   },
   "conversionDryRun": {
-    "sha256": "9338794400264f496be729f4e8d02c77b057354a630d879cbd6480853862b8ec",
-    "recordCount": 1039,
+    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "recordCount": 0,
     "artifactWritten": false,
     "reviewStatus": "pending"
   },

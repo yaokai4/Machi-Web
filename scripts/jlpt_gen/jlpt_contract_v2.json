@@ -35,7 +35,36 @@
         "items": {"type": "string", "minLength": 1}
       },
       "answerIndex": {"type": "integer", "minimum": 0, "maximum": 3},
-      "explanation": {"type": "string", "minLength": 1},
+      "explanation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "correctAnswerMeaningUsage",
+          "knowledgePoint",
+          "whyCorrect",
+          "distractorReasons"
+        ],
+        "properties": {
+          "correctAnswerMeaningUsage": {"type": "string", "minLength": 24},
+          "knowledgePoint": {"type": "string", "minLength": 24},
+          "whyCorrect": {"type": "string", "minLength": 24},
+          "distractorReasons": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["choice", "reason"],
+              "properties": {
+                "choice": {"type": "string", "minLength": 1},
+                "reason": {"type": "string", "minLength": 20}
+              }
+            }
+          }
+        }
+      },
       "difficulty": {"type": "integer", "minimum": 1, "maximum": 5},
       "theme": {"type": "string"}
     }
@@ -53,7 +82,15 @@
   "provenanceSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["generator", "workflowSha256", "operator", "models", "createdAt"],
+    "required": [
+      "generator",
+      "workflowSha256",
+      "operator",
+      "models",
+      "authorStepId",
+      "authorModel",
+      "createdAt"
+    ],
     "properties": {
       "generator": {"type": "string", "const": "jlpt_bank_gen_v2"},
       "workflowSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -64,6 +101,8 @@
         "uniqueItems": true,
         "items": {"type": "string", "minLength": 1}
       },
+      "authorStepId": {"type": "string", "minLength": 1},
+      "authorModel": {"type": "string", "minLength": 1},
       "createdAt": {"type": "string", "minLength": 1}
     }
   },
@@ -103,12 +142,31 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["reviewer", "accepted", "fatal", "answer"],
+                "required": [
+                  "reviewer",
+                  "stepId",
+                  "model",
+                  "accepted",
+                  "fatal",
+                  "answer",
+                  "answerAccepted",
+                  "answerFatal",
+                  "explanationAccepted",
+                  "explanationFatal",
+                  "explanationNote"
+                ],
                 "properties": {
                   "reviewer": {"type": "string", "minLength": 1},
+                  "stepId": {"type": "string", "minLength": 1},
+                  "model": {"type": "string", "minLength": 1},
                   "accepted": {"type": "boolean"},
                   "fatal": {"type": "boolean"},
-                  "answer": {"type": "string", "minLength": 1}
+                  "answer": {"type": "string", "minLength": 1},
+                  "answerAccepted": {"type": "boolean"},
+                  "answerFatal": {"type": "boolean"},
+                  "explanationAccepted": {"type": "boolean"},
+                  "explanationFatal": {"type": "boolean"},
+                  "explanationNote": {"type": "string", "minLength": 8}
                 }
               }
             }
@@ -124,8 +182,40 @@
     "rejectFatal": true,
     "requireAnswerAgreement": true
   },
+  "explanationQualityGate": {
+    "minimumCanonicalCharacters": {
+      "correctAnswerMeaningUsage": 24,
+      "knowledgePoint": 24,
+      "whyCorrect": 24,
+      "distractorReason": 20
+    },
+    "requireExplicitChoiceReference": true,
+    "requireDistinctCoreParts": true,
+    "forbiddenPlaceholderFragments": [
+      "占位",
+      "待补充",
+      "同上",
+      "见上",
+      "placeholder",
+      "todo",
+      "tbd"
+    ]
+  },
   "releaseGate": {
-    "minimumApprovedUniqueStagedByLevel": {"N1": 1000, "N2": 1000}
+    "minimumApprovedUniqueStagedByLevel": {"N1": 1000, "N2": 1000},
+    "requiredRunGroupsByLevel": {"N1": ["lex", "rc"], "N2": ["lex", "rc"]},
+    "minimumUniqueBySection": {
+      "N1": {"vocab": 200, "grammar": 150, "reading": 100, "listening": 100},
+      "N2": {"vocab": 225, "grammar": 150, "reading": 100, "listening": 100}
+    },
+    "minimumPaperCoverageCopiesByQtype": 1
+  },
+  "similarityGate": {
+    "fuzzyShingleSize": 3,
+    "fuzzyDiceThreshold": 0.72,
+    "minimumCanonicalCharacters": 12,
+    "embeddingEvidenceRequired": true,
+    "officialCorpusEvidenceRequired": true
   },
   "generationGroups": {
     "lex": [

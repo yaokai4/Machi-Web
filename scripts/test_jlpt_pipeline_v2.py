@@ -8,10 +8,13 @@ import hashlib
 import importlib
 import inspect
 import copy
+import base64
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -30,7 +33,36 @@ def _contract_module():
     return importlib.import_module("jlpt_contract_v2")
 
 
+def _pipeline_module():
+    if "jlpt_pipeline_v2" in sys.modules:
+        return importlib.reload(sys.modules["jlpt_pipeline_v2"])
+    return importlib.import_module("jlpt_pipeline_v2")
+
+
+def _structured_explanation(
+    choices: list[str],
+    answer_index: int,
+    *,
+    seed: str = "fixture",
+) -> dict[str, object]:
+    correct = choices[answer_index]
+    return {
+        "correctAnswerMeaningUsage": f"{seed}：正确项 {correct} 的意思、用法与适用语境说明。",
+        "knowledgePoint": f"{seed}：本题考查接续、搭配、语体与近义辨析规则。",
+        "whyCorrect": f"{seed}：结合完整句意，只有 {correct} 能唯一满足上下文。",
+        "distractorReasons": [
+            {
+                "choice": choice,
+                "reason": f"{seed}：{choice} 在此处因语义、搭配或语体不合而不能成立。",
+            }
+            for index, choice in enumerate(choices)
+            if index != answer_index
+        ],
+    }
+
+
 def _question(**updates: object) -> dict[str, object]:
+    choices = ["ため", "ので", "のに", "なら"]
     question: dict[str, object] = {
         "level": "N1",
         "section": "grammar",
@@ -38,13 +70,18 @@ def _question(**updates: object) -> dict[str, object]:
         "stem": "（　）に入るものを選びなさい。",
         "passage": "",
         "group": "",
-        "choices": ["ため", "ので", "のに", "なら"],
+        "choices": choices,
         "answerIndex": 1,
-        "explanation": "正解は「ので」。理由を表す。",
         "difficulty": 3,
         "theme": "学校・勉強",
     }
     question.update(updates)
+    if "explanation" not in updates:
+        question["explanation"] = _structured_explanation(
+            question["choices"],
+            question["answerIndex"],
+            seed=str(question["stem"]),
+        )
     return question
 
 
@@ -64,6 +101,8 @@ def _write_provenance(path: Path, **updates: object) -> dict[str, object]:
         "workflowSha256": hashlib.sha256(WORKFLOW_PATH.read_bytes()).hexdigest(),
         "operator": "pipeline-test",
         "models": ["generator-model", "blind-reviewer-a", "blind-reviewer-b"],
+        "authorStepId": "author-pipeline-test",
+        "authorModel": "generator-model",
         "createdAt": "2026-07-22T00:00:00+09:00",
     }
     provenance.update(updates)
@@ -85,6 +124,13 @@ def _minimum_pool(level: str, group: str) -> list[dict[str, object]]:
                 legacy_group = f"{qtype}-group"
             elif spec["groupMode"] == "single_script":
                 passage = f"男：{level} {qtype} script {index}。"
+            choices = [
+                f"{qtype}-{index}-a",
+                f"{qtype}-{index}-b",
+                f"{qtype}-{index}-c",
+                f"{qtype}-{index}-d",
+            ]
+            answer_index = index % 4
             pool.append(
                 {
                     "level": level,
@@ -93,14 +139,13 @@ def _minimum_pool(level: str, group: str) -> list[dict[str, object]]:
                     "stem": f"{level} {qtype} question {index}",
                     "passage": passage,
                     "group": legacy_group,
-                    "choices": [
-                        f"{qtype}-{index}-a",
-                        f"{qtype}-{index}-b",
-                        f"{qtype}-{index}-c",
-                        f"{qtype}-{index}-d",
-                    ],
-                    "answerIndex": index % 4,
-                    "explanation": f"{qtype} explanation {index}",
+                    "choices": choices,
+                    "answerIndex": answer_index,
+                    "explanation": _structured_explanation(
+                        choices,
+                        answer_index,
+                        seed=f"{qtype}-{index}",
+                    ),
                     "difficulty": 3,
                     "theme": "test-theme",
                 }
@@ -151,9 +196,16 @@ def _receipt_for_run(
                 "reviews": [
                     {
                         "reviewer": reviewer,
+                        "stepId": f"review-step-{reviewer}",
+                        "model": reviewer,
                         "accepted": True,
                         "fatal": False,
                         "answer": answer,
+                        "answerAccepted": True,
+                        "answerFatal": False,
+                        "explanationAccepted": True,
+                        "explanationFatal": False,
+                        "explanationNote": "结构化解析的四部分和三个干扰项理由均已独立核对。",
                     }
                     for reviewer in reviewer_ids
                 ],
@@ -173,6 +225,13 @@ def _release_records(level: str, count: int, *, seed: str) -> list[dict[str, obj
     contract_v2 = _contract_module()
     records: list[dict[str, object]] = []
     for index in range(count):
+        choices = [
+            f"{seed}-{index}-a",
+            f"{seed}-{index}-b",
+            f"{seed}-{index}-c",
+            f"{seed}-{index}-d",
+        ]
+        answer_index = index % 4
         records.append(
             contract_v2.normalize_question(
                 {
@@ -182,17 +241,68 @@ def _release_records(level: str, count: int, *, seed: str) -> list[dict[str, obj
                     "stem": f"{seed} {level} 漢字問題 {index}",
                     "passage": "",
                     "group": "",
-                    "choices": [
-                        f"{seed}-{index}-a",
-                        f"{seed}-{index}-b",
-                        f"{seed}-{index}-c",
-                        f"{seed}-{index}-d",
-                    ],
-                    "answerIndex": index % 4,
-                    "explanation": f"{seed} {level} 解説 {index}",
+                    "choices": choices,
+                    "answerIndex": answer_index,
+                    "explanation": _structured_explanation(
+                        choices,
+                        answer_index,
+                        seed=f"{seed}-{level}-{index}",
+                    ),
                     "difficulty": 3,
                     "theme": "release-test",
                 }
+            )
+        )
+    return records
+
+
+def _distributed_release_records(
+    level: str,
+    count: int,
+    *,
+    seed: str,
+    group: str,
+) -> list[dict[str, object]]:
+    contract_v2 = _contract_module()
+    contract = contract_v2.load_contract()
+    qtypes = [
+        qtype
+        for qtype in contract["generationGroups"][group]
+        if qtype in contract["paperSpec"][level]
+    ]
+    records: list[dict[str, object]] = []
+    for index in range(count):
+        qtype = qtypes[index % len(qtypes)]
+        spec = contract["qtypes"][qtype]
+        token = hashlib.sha256(f"{seed}:{qtype}:{index}".encode("utf-8")).hexdigest()
+        passage = ""
+        legacy_group = ""
+        if spec["groupMode"] == "atomic":
+            group_index = index // (2 * len(qtypes))
+            group_token = hashlib.sha256(
+                f"{seed}:{qtype}:group:{group_index}".encode("utf-8")
+            ).hexdigest()
+            passage = f"{group_token} 原创文章。（1）（2）"
+            legacy_group = f"{seed}-{qtype}-{group_index}"
+        elif spec["groupMode"] == "single_script":
+            passage = f"男：{token} 原创脚本。"
+        choices = [
+            hashlib.sha256(f"{token}:{suffix}".encode("utf-8")).hexdigest()
+            for suffix in ("a", "b", "c", "d")
+        ]
+        records.append(
+            contract_v2.normalize_question(
+                _question(
+                    level=level,
+                    section=spec["section"],
+                    qtype=qtype,
+                    stem=f"{token} 問題",
+                    passage=passage,
+                    group=legacy_group,
+                    choices=choices,
+                    answerIndex=index % 4,
+                    theme=f"theme-{index % 18}",
+                )
             )
         )
     return records
@@ -218,6 +328,129 @@ def _write_json_for_test(path: Path, value: object) -> None:
     )
 
 
+def _question_set_sha256_for_runs(run_dirs: list[Path]) -> str:
+    unique: dict[str, str] = {}
+    for run_dir in run_dirs:
+        records = json.loads((run_dir / "verified.json").read_text(encoding="utf-8"))
+        for record in records:
+            unique[record["id"]] = record["contentHash"]
+    payload = [
+        {"id": question_id, "contentHash": unique[question_id]}
+        for question_id in sorted(unique)
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _write_external_similarity_evidence(
+    path: Path,
+    run_dirs: list[Path],
+    *,
+    suffix: str = "",
+) -> Path:
+    contract_hash = hashlib.sha256(CONTRACT_PATH.read_bytes()).hexdigest()
+    question_set_hash = _question_set_sha256_for_runs(run_dirs)
+    checker_specs = {
+        "embedding": (f"fixture-embedding-checker{suffix}", "embedding_checker"),
+        "officialCorpus": (
+            f"fixture-official-checker{suffix}",
+            "official_corpus_checker",
+        ),
+    }
+    private_keys: dict[str, Path] = {}
+    public_entries: list[dict[str, object]] = []
+    for kind, (key_id, role) in checker_specs.items():
+        private_key, single_keyring, _ = _approval_material(
+            path.parent,
+            key_id=key_id,
+            role=role,
+        )
+        private_keys[kind] = private_key
+        public_entries.extend(
+            json.loads(single_keyring.read_text(encoding="utf-8"))["keys"]
+        )
+    keyring = path.parent / f"similarity-checkers{suffix}-trusted-keys.json"
+    _write_json_for_test(
+        keyring,
+        {"keyringVersion": 1, "keys": public_entries},
+    )
+    now = datetime.now(timezone.utc)
+    issued_at = now - timedelta(minutes=1)
+    expires_at = now + timedelta(hours=1)
+    receipt_paths = {
+        "embedding": path.parent / f"embedding-receipt{suffix}.json",
+        "officialCorpus": path.parent / f"official-corpus-receipt{suffix}.json",
+    }
+    for kind, receipt_path in receipt_paths.items():
+        _write_json_for_test(
+            receipt_path,
+            {
+                "receiptVersion": 1,
+                "checker": checker_specs[kind][0],
+                "kind": kind,
+                "questionSetSha256": question_set_hash,
+                "result": "passed",
+            },
+        )
+
+    def attestation(kind: str, **fields: object) -> dict[str, object]:
+        receipt_path = receipt_paths[kind]
+        component: dict[str, object] = {
+            "kind": kind,
+            "status": "passed-external",
+            **fields,
+            "receiptPath": str(receipt_path.resolve()),
+            "receiptSha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+            "keyId": checker_specs[kind][0],
+            "issuedAt": issued_at.isoformat(),
+            "expiresAt": expires_at.isoformat(),
+        }
+        signed_component = {
+            key: value
+            for key, value in component.items()
+            if key != "receiptPath"
+        }
+        signed_payload = {
+            "attestationVersion": 1,
+            "contractSha256": contract_hash,
+            "questionSetSha256": question_set_hash,
+            "checkedAt": now.isoformat(),
+            "attestation": signed_component,
+        }
+        component["signatureBase64"] = base64.b64encode(
+            _sign_payload(private_keys[kind], signed_payload)
+        ).decode("ascii")
+        return component
+
+    _write_json_for_test(
+        path,
+        {
+            "evidenceVersion": 1,
+            "contractSha256": contract_hash,
+            "questionSetSha256": question_set_hash,
+            "checkedAt": now.isoformat(),
+            "embedding": attestation(
+                "embedding",
+                provider="test-fixture",
+                model="fixture-embedding-v1",
+                indexSha256=hashlib.sha256(b"fixture-index").hexdigest(),
+            ),
+            "officialCorpus": attestation(
+                "officialCorpus",
+                checkerVersion="fixture-official-corpus-v1",
+                corpusSha256=hashlib.sha256(b"fixture-corpus").hexdigest(),
+            ),
+        },
+    )
+    return keyring
+
+
 def _reviewed_run(
     root: Path,
     *,
@@ -225,13 +458,14 @@ def _reviewed_run(
     level: str,
     records: list[dict[str, object]],
     wave: int,
+    group: str = "lex",
 ) -> Path:
     run_dir = root / name
     provenance_path = root / f"{name}-provenance.json"
     _write_provenance(provenance_path, operator=name)
     initialized = _run_pipeline(
         "init-run", "--run-dir", str(run_dir), "--level", level,
-        "--group", "lex", "--wave", str(wave), "--provenance", str(provenance_path),
+        "--group", group, "--wave", str(wave), "--provenance", str(provenance_path),
     )
     if initialized.returncode != 0:
         raise AssertionError(initialized.stderr)
@@ -252,9 +486,16 @@ def _reviewed_run(
                 "reviews": [
                     {
                         "reviewer": reviewer,
+                        "stepId": f"review-step-{reviewer}",
+                        "model": reviewer,
                         "accepted": True,
                         "fatal": False,
                         "answer": record["choices"][record["answerIndex"]],
+                        "answerAccepted": True,
+                        "answerFatal": False,
+                        "explanationAccepted": True,
+                        "explanationFatal": False,
+                        "explanationNote": "结构化解析的四部分和三个干扰项理由均已独立核对。",
                     }
                     for reviewer in ("blind-reviewer-a", "blind-reviewer-b")
                 ],
@@ -263,6 +504,23 @@ def _reviewed_run(
         ],
         "issuedAt": "2026-07-22T02:00:00+09:00",
     }
+    receipt_bytes = (
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
+    for item, verdict in zip(verified, receipt["verdicts"], strict=True):
+        item["provenanceEvidence"] = {
+            "runId": manifest["runId"],
+            "request": manifest["request"],
+            "workflowSha256": manifest["workflow"]["sha256"],
+            "authorStepId": manifest["provenance"]["authorStepId"],
+            "authorModel": manifest["provenance"]["authorModel"],
+        }
+        item["reviewEvidence"] = {
+            "receiptSha256": receipt_sha256,
+            "issuedAt": receipt["issuedAt"],
+            "reviews": copy.deepcopy(verdict["reviews"]),
+        }
     metrics = {
         "raw": len(pending),
         "sanitized": len(pending),
@@ -301,7 +559,7 @@ def _reviewed_run(
     }
     manifest["receipt"] = {
         "sourcePath": str((run_dir / "receipt.json").resolve()),
-        "sourceSha256": hashlib.sha256((run_dir / "receipt.json").read_bytes()).hexdigest(),
+        "sourceSha256": receipt_sha256,
         "reviewers": receipt["reviewers"],
         "issuedAt": receipt["issuedAt"],
     }
@@ -310,21 +568,187 @@ def _reviewed_run(
     return run_dir
 
 
-def _release_signature(release_dir: Path, *, decision: str, **updates: object) -> dict[str, object]:
+def _release_ready_runs(
+    root: Path,
+    *,
+    prefix: str,
+) -> tuple[list[Path], dict[tuple[str, str], list[dict[str, object]]]]:
+    runs: list[Path] = []
+    records_by_run: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for level in ("N1", "N2"):
+        for group, count in (("lex", 504), ("rc", 496)):
+            records = _distributed_release_records(
+                level,
+                count,
+                seed=f"{prefix}-{level.lower()}-{group}",
+                group=group,
+            )
+            records_by_run[(level, group)] = records
+            runs.append(
+                _reviewed_run(
+                    root,
+                    name=f"{prefix}-{level.lower()}-{group}",
+                    level=level,
+                    records=records,
+                    wave=1,
+                    group=group,
+                )
+            )
+    return runs, records_by_run
+
+
+def _approval_material(
+    root: Path,
+    *,
+    key_id: str = "fixture-key",
+    role: str = "human_release_owner",
+) -> tuple[Path, Path, Path]:
+    private_key = root / f"{key_id}-private.pem"
+    public_key = root / f"{key_id}-public.pem"
+    keyring = root / f"{key_id}-trusted-keys.json"
+    registry = root / "approval-consumptions.jsonl"
+    generated = subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if generated.returncode != 0:
+        raise AssertionError(generated.stderr)
+    exported = subprocess.run(
+        ["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if exported.returncode != 0:
+        raise AssertionError(exported.stderr)
+    _write_json_for_test(
+        keyring,
+        {
+            "keyringVersion": 1,
+            "keys": [
+                {
+                    "keyId": key_id,
+                    "algorithm": "Ed25519",
+                    "role": role,
+                    "approvedBy": "human-release-owner",
+                    "publicKeyPem": public_key.read_text(encoding="utf-8"),
+                }
+            ],
+        },
+    )
+    return private_key, keyring, registry
+
+
+def _sign_payload(private_key: Path, value: object) -> bytes:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    with tempfile.NamedTemporaryFile() as message:
+        message.write(payload)
+        message.flush()
+        signed = subprocess.run(
+            [
+                "openssl",
+                "pkeyutl",
+                "-sign",
+                "-rawin",
+                "-inkey",
+                str(private_key),
+                "-in",
+                message.name,
+            ],
+            capture_output=True,
+            check=False,
+        )
+    if signed.returncode != 0:
+        raise AssertionError(signed.stderr.decode("utf-8", errors="replace"))
+    return signed.stdout
+
+
+def _release_signature(
+    release_dir: Path,
+    *,
+    decision: str,
+    private_key: Path,
+    key_id: str = "fixture-key",
+    issued_at: datetime | None = None,
+    expires_at: datetime | None = None,
+    **updates: object,
+) -> dict[str, object]:
     manifest = json.loads((release_dir / "manifest.json").read_text(encoding="utf-8"))
+    issued_at = issued_at or (datetime.now(timezone.utc) - timedelta(minutes=1))
+    expires_at = expires_at or (datetime.now(timezone.utc) + timedelta(hours=1))
     signature: dict[str, object] = {
+        "signatureVersion": 1,
         "releaseId": manifest["releaseId"],
+        "releaseNonce": manifest["releaseNonce"],
         "contractSha256": manifest["contract"]["sha256"],
+        "candidateSha256": manifest["artifacts"]["candidate"]["sha256"],
+        "similarityEvidenceSha256": manifest["artifacts"]["similarityEvidence"]["sha256"],
+        "embeddingReceiptSha256": manifest["artifacts"]["embeddingReceipt"]["sha256"],
+        "officialCorpusReceiptSha256": manifest["artifacts"]["officialCorpusReceipt"]["sha256"],
+        "targetBeforeSha256": (
+            manifest["target"]["observedSha256"]
+            if decision == "publish"
+            else manifest["publication"]["targetSha256"]
+        ),
         "decision": decision,
+        "keyId": key_id,
         "approvedBy": "human-release-owner",
-        "signedAt": "2026-07-22T03:00:00+09:00",
+        "issuedAt": issued_at.isoformat(),
+        "expiresAt": expires_at.isoformat(),
     }
-    if decision == "publish":
-        signature["candidateSha256"] = manifest["artifacts"]["candidate"]["sha256"]
-    else:
-        signature["publishedSha256"] = manifest["publication"]["targetSha256"]
     signature.update(updates)
+    signature["signatureBase64"] = base64.b64encode(
+        _sign_payload(private_key, signature)
+    ).decode("ascii")
     return signature
+
+
+def _approval_cli(
+    keyring: Path,
+    registry: Path,
+    checker_keyring: Path,
+) -> list[str]:
+    return [
+        "--trusted-keys",
+        str(keyring),
+        "--approval-registry",
+        str(registry),
+        "--similarity-trusted-keys",
+        str(checker_keyring),
+    ]
+
+
+def _resign_similarity_component(
+    evidence_path: Path,
+    *,
+    kind: str,
+    private_key: Path,
+) -> None:
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    component = evidence[kind]
+    signed_component = {
+        key: value
+        for key, value in component.items()
+        if key not in {"receiptPath", "signatureBase64"}
+    }
+    signed_payload = {
+        "attestationVersion": 1,
+        "contractSha256": evidence["contractSha256"],
+        "questionSetSha256": evidence["questionSetSha256"],
+        "checkedAt": evidence["checkedAt"],
+        "attestation": signed_component,
+    }
+    component["signatureBase64"] = base64.b64encode(
+        _sign_payload(private_key, signed_payload)
+    ).decode("ascii")
+    _write_json_for_test(evidence_path, evidence)
 
 
 class ContractV2Tests(unittest.TestCase):
@@ -394,7 +818,13 @@ class ContractV2Tests(unittest.TestCase):
             _question(stem="別の（　）問題。"),
             _question(choices=["ため", "ので", "のに", "ならば"]),
             _question(answerIndex=0),
-            _question(explanation="「ので」は客観的な理由を示す接続助詞。"),
+            _question(
+                explanation=_structured_explanation(
+                    ["ため", "ので", "のに", "なら"],
+                    1,
+                    seed="different-explanation",
+                )
+            ),
             _question(
                 section="listening",
                 qtype="listen_task",
@@ -463,7 +893,7 @@ class ContractV2Tests(unittest.TestCase):
             stem="（2）に入るものはどれか。",
             passage="共通文章。（1）（2）",
             group="article-a",
-            explanation="",
+            explanation={},
         )
 
         result = contract_v2.sanitize_pool([valid, invalid], expected_level="N1", expected_group="lex")
@@ -482,7 +912,10 @@ class ContractV2Tests(unittest.TestCase):
         self.assertTrue(hasattr(contract_v2, "sanitize_pool"), "sanitize_pool is missing")
         original = _question()
         duplicate = json.loads(json.dumps(original, ensure_ascii=False))
-        conflict = dict(original, explanation="冲突的解析。")
+        conflict = copy.deepcopy(original)
+        conflict["explanation"]["whyCorrect"] = (
+            "冲突版本：结合完整句意，只有正确选项ので能满足接续、语义和语体要求。"
+        )
 
         exact = contract_v2.sanitize_pool([original, duplicate], expected_level="N1", expected_group="lex")
         conflicted = contract_v2.sanitize_pool([original, conflict], expected_level="N1", expected_group="lex")
@@ -634,16 +1067,21 @@ class RunManifestTests(unittest.TestCase):
         self.assertTrue(PIPELINE_PATH.is_file(), "v2 pipeline CLI is missing")
         base = _minimum_pool("N1", "lex")
         broken_field = copy.deepcopy(base)
-        broken_field[0]["explanation"] = ""
+        broken_field[0]["explanation"] = {}
         broken_group = copy.deepcopy(base)
         grouped = next(item for item in broken_group if item["qtype"] == "text_grammar")
-        grouped["explanation"] = ""
+        grouped["explanation"] = {}
         shortfall = copy.deepcopy(base[:-1])
         overfill = copy.deepcopy(base)
         text_members = [item for item in overfill if item["qtype"] == "text_grammar"]
         extra = copy.deepcopy(text_members[-1])
         extra["stem"] = "text grammar atomic overfill extra"
         extra["choices"] = ["extra-a", "extra-b", "extra-c", "extra-d"]
+        extra["explanation"] = _structured_explanation(
+            extra["choices"],
+            extra["answerIndex"],
+            seed="text-grammar-overfill-extra",
+        )
         overfill.append(extra)
         cases: list[tuple[str, object, str]] = [
             ("empty", {"pool": []}, "pool_invalid"),
@@ -735,6 +1173,29 @@ class RunManifestTests(unittest.TestCase):
             self.assertEqual(len(verified), manifest["metrics"]["verified"])
             self.assertTrue(all(item["reviewStatus"] == "verified" for item in verified))
             self.assertTrue(all(item["reviewStatus"] != "approved" for item in verified))
+            first_item = verified[0]
+            self.assertEqual(manifest["runId"], first_item["provenanceEvidence"]["runId"])
+            self.assertEqual(
+                manifest["workflow"]["sha256"],
+                first_item["provenanceEvidence"]["workflowSha256"],
+            )
+            self.assertEqual(
+                manifest["receipt"]["sourceSha256"],
+                first_item["reviewEvidence"]["receiptSha256"],
+            )
+            self.assertEqual(
+                {"blind-reviewer-a", "blind-reviewer-b"},
+                {review["reviewer"] for review in first_item["reviewEvidence"]["reviews"]},
+            )
+            self.assertTrue(
+                all(review["answerAccepted"] for review in first_item["reviewEvidence"]["reviews"])
+            )
+            self.assertTrue(
+                all(
+                    review["explanationAccepted"]
+                    for review in first_item["reviewEvidence"]["reviews"]
+                )
+            )
 
     def test_verify_rejects_malformed_or_mismatched_receipt_without_writes(self) -> None:
         mutations = [
@@ -774,6 +1235,7 @@ class RunManifestTests(unittest.TestCase):
             receipt["verdicts"][0]["reviews"][1]["accepted"] = False
             receipt["verdicts"][1]["reviews"][0]["fatal"] = True
             receipt["verdicts"][2]["reviews"][0]["answer"] = "not-the-authored-answer"
+            receipt["verdicts"][3]["reviews"][0]["explanationAccepted"] = False
             receipt_path = root / "receipt.json"
             receipt_path.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
 
@@ -785,8 +1247,8 @@ class RunManifestTests(unittest.TestCase):
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             sanitized = json.loads((run_dir / "sanitized.json").read_text(encoding="utf-8"))
             verified = json.loads((run_dir / "verified.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(sanitized) - 3, len(verified))
-            self.assertEqual(3, manifest["metrics"]["receiptRejected"])
+            self.assertEqual(len(sanitized) - 4, len(verified))
+            self.assertEqual(4, manifest["metrics"]["receiptRejected"])
             self.assertTrue(all(item["reviewStatus"] == "verified" for item in verified))
 
 
@@ -794,14 +1256,8 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_stage_deduplicates_verified_content_is_pending_and_preserves_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            n1_records = _release_records("N1", 1000, seed="n1-release")
-            n2_records = _release_records("N2", 1000, seed="n2-release")
-            n1_run = _reviewed_run(
-                root, name="n1", level="N1", records=n1_records, wave=1
-            )
-            n2_run = _reviewed_run(
-                root, name="n2", level="N2", records=n2_records, wave=1
-            )
+            runs, records_by_run = _release_ready_runs(root, prefix="release-stage")
+            n1_records = records_by_run[("N1", "lex")]
             duplicate_raw = {
                 key: value
                 for key, value in n1_records[0].items()
@@ -814,16 +1270,27 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertEqual(n1_records[0]["id"], reordered_duplicate["id"])
             self.assertEqual(n1_records[0]["contentHash"], reordered_duplicate["contentHash"])
             duplicate_run = _reviewed_run(
-                root, name="n1-duplicate", level="N1", records=[reordered_duplicate], wave=2
+                root,
+                name="n1-duplicate",
+                level="N1",
+                records=[reordered_duplicate],
+                wave=2,
+                group="lex",
             )
+            all_runs = [*runs, duplicate_run]
             release_dir = root / "release"
             target = root / "bank.json"
             target.write_bytes(b'{\n  "source": "jlptv2",\n  "questions": []\n}\n')
             before = target.read_bytes()
+            similarity_evidence = root / "similarity-evidence.json"
+            checker_keyring = _write_external_similarity_evidence(
+                similarity_evidence, all_runs
+            )
             command = (
                 "stage", "--release-dir", str(release_dir), "--target", str(target),
-                "--run-dir", str(n1_run), "--run-dir", str(n2_run),
-                "--run-dir", str(duplicate_run),
+                "--similarity-evidence", str(similarity_evidence),
+                "--similarity-trusted-keys", str(checker_keyring),
+                *[value for run_dir in all_runs for value in ("--run-dir", str(run_dir))],
             )
 
             first = _run_pipeline(*command)
@@ -859,14 +1326,24 @@ class ReleasePipelineTests(unittest.TestCase):
             reversed_release = root / "release-reversed"
             reversed_stage = _run_pipeline(
                 "stage", "--release-dir", str(reversed_release), "--target", str(target),
-                "--run-dir", str(duplicate_run), "--run-dir", str(n2_run),
-                "--run-dir", str(n1_run),
+                "--similarity-evidence", str(similarity_evidence),
+                "--similarity-trusted-keys", str(checker_keyring),
+                *[
+                    value
+                    for run_dir in reversed(all_runs)
+                    for value in ("--run-dir", str(run_dir))
+                ],
             )
             self.assertEqual(0, reversed_stage.returncode, reversed_stage.stderr)
-            self.assertEqual(
-                tracked,
-                {name: (reversed_release / name).read_bytes() for name in tracked},
+            reversed_manifest = json.loads(
+                (reversed_release / "manifest.json").read_text(encoding="utf-8")
             )
+            self.assertEqual(
+                tracked["candidate.json"],
+                (reversed_release / "candidate.json").read_bytes(),
+            )
+            self.assertNotEqual(manifest["releaseNonce"], reversed_manifest["releaseNonce"])
+            self.assertNotEqual(manifest["releaseId"], reversed_manifest["releaseId"])
 
     def test_stage_rejects_tampering_identity_conflicts_and_release_shortfall_without_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -875,12 +1352,15 @@ class ReleasePipelineTests(unittest.TestCase):
             target.write_text('{"source":"jlptv2","questions":[]}\n', encoding="utf-8")
             target_before = target.read_bytes()
             one = _release_records("N1", 1, seed="conflict")
-            conflict_raw = {
+            conflict_raw = copy.deepcopy({
                 key: value
                 for key, value in one[0].items()
                 if key not in {"id", "groupId", "contentHash", "source", "reviewStatus"}
-            }
-            conflict_raw["explanation"] = "different reviewed explanation"
+            })
+            conflict_raw["explanation"]["whyCorrect"] = (
+                "different reviewed explanation: only the selected choice "
+                f"{conflict_raw['choices'][conflict_raw['answerIndex']]} satisfies the full context"
+            )
             conflict = [_contract_module().normalize_question(conflict_raw)]
             first_run = _reviewed_run(root, name="first", level="N1", records=one, wave=1)
             conflict_run = _reviewed_run(
@@ -919,33 +1399,26 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_publish_and_rollback_require_exact_signatures_hashes_and_protect_legacy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            n1_run = _reviewed_run(
-                root,
-                name="n1",
-                level="N1",
-                records=_release_records("N1", 1000, seed="publish-n1"),
-                wave=1,
-            )
-            n2_run = _reviewed_run(
-                root,
-                name="n2",
-                level="N2",
-                records=_release_records("N2", 1000, seed="publish-n2"),
-                wave=1,
-            )
+            runs, _ = _release_ready_runs(root, prefix="publish")
+            private_key, keyring, registry = _approval_material(root)
+            similarity_evidence = root / "similarity-evidence.json"
+            checker_keyring = _write_external_similarity_evidence(similarity_evidence, runs)
             target = root / "bank.json"
             original = b'{\n "source": "jlptv2", "questions": [{"id":"prior"}]\n}\n'
             target.write_bytes(original)
             release_dir = root / "release"
             staged = _run_pipeline(
                 "stage", "--release-dir", str(release_dir), "--target", str(target),
-                "--run-dir", str(n1_run), "--run-dir", str(n2_run),
+                "--similarity-evidence", str(similarity_evidence),
+                "--similarity-trusted-keys", str(checker_keyring),
+                *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
             )
             self.assertEqual(0, staged.returncode, staged.stderr)
 
             missing = _run_pipeline(
                 "publish", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(root / "missing-signature.json"),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, missing.returncode)
             self.assertEqual(original, target.read_bytes())
@@ -954,28 +1427,43 @@ class ReleasePipelineTests(unittest.TestCase):
             malformed = _run_pipeline(
                 "publish", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(malformed_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, malformed.returncode)
             self.assertEqual(original, target.read_bytes())
             mismatch_path = root / "mismatch-signature.json"
             _write_json_for_test(
                 mismatch_path,
-                _release_signature(release_dir, decision="publish", candidateSha256="0" * 64),
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=private_key,
+                    candidateSha256="0" * 64,
+                ),
             )
             mismatch = _run_pipeline(
                 "publish", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(mismatch_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, mismatch.returncode)
             self.assertIn('"code": "signature_invalid"', mismatch.stderr)
             self.assertEqual(original, target.read_bytes())
 
             signature_path = root / "publish-signature.json"
-            _write_json_for_test(signature_path, _release_signature(release_dir, decision="publish"))
+            _write_json_for_test(
+                signature_path,
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=private_key,
+                ),
+            )
             target.write_bytes(original + b"changed")
             changed = _run_pipeline(
                 "publish", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(signature_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, changed.returncode)
             self.assertIn('"code": "target_changed"', changed.stderr)
@@ -984,6 +1472,7 @@ class ReleasePipelineTests(unittest.TestCase):
             published = _run_pipeline(
                 "publish", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(signature_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(0, published.returncode, published.stderr)
             published_bytes = target.read_bytes()
@@ -995,6 +1484,7 @@ class ReleasePipelineTests(unittest.TestCase):
             publish_resume = _run_pipeline(
                 "publish", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(signature_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(0, publish_resume.returncode, publish_resume.stderr)
             self.assertTrue(json.loads(publish_resume.stdout)["resumed"])
@@ -1004,25 +1494,40 @@ class ReleasePipelineTests(unittest.TestCase):
             rollback_missing = _run_pipeline(
                 "rollback", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(root / "missing-rollback-signature.json"),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, rollback_missing.returncode)
             self.assertEqual(published_bytes, target.read_bytes())
             _write_json_for_test(
                 rollback_mismatch_path,
-                _release_signature(release_dir, decision="rollback", publishedSha256="0" * 64),
+                _release_signature(
+                    release_dir,
+                    decision="rollback",
+                    private_key=private_key,
+                    targetBeforeSha256="0" * 64,
+                ),
             )
             rollback_mismatch = _run_pipeline(
                 "rollback", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(rollback_mismatch_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, rollback_mismatch.returncode)
             self.assertEqual(published_bytes, target.read_bytes())
             rollback_path = root / "rollback-signature.json"
-            _write_json_for_test(rollback_path, _release_signature(release_dir, decision="rollback"))
+            _write_json_for_test(
+                rollback_path,
+                _release_signature(
+                    release_dir,
+                    decision="rollback",
+                    private_key=private_key,
+                ),
+            )
             target.write_bytes(published_bytes + b"tampered")
             tampered = _run_pipeline(
                 "rollback", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(rollback_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, tampered.returncode)
             self.assertIn('"code": "target_changed"', tampered.stderr)
@@ -1030,12 +1535,14 @@ class ReleasePipelineTests(unittest.TestCase):
             rolled_back = _run_pipeline(
                 "rollback", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(rollback_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(0, rolled_back.returncode, rolled_back.stderr)
             self.assertEqual(original, target.read_bytes())
             rollback_resume = _run_pipeline(
                 "rollback", "--release-dir", str(release_dir), "--target", str(target),
                 "--signature", str(rollback_path),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(0, rollback_resume.returncode, rollback_resume.stderr)
             self.assertTrue(json.loads(rollback_resume.stdout)["resumed"])
@@ -1049,8 +1556,10 @@ class ReleasePipelineTests(unittest.TestCase):
             mock_candidate_release = root / "mock-candidate-release"
             mock_candidate_stage = _run_pipeline(
                 "stage", "--release-dir", str(mock_candidate_release),
-                "--target", str(mock_candidate_target), "--run-dir", str(n1_run),
-                "--run-dir", str(n2_run),
+                "--target", str(mock_candidate_target),
+                "--similarity-evidence", str(similarity_evidence),
+                "--similarity-trusted-keys", str(checker_keyring),
+                *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
             )
             self.assertEqual(0, mock_candidate_stage.returncode, mock_candidate_stage.stderr)
             mock_candidate = json.loads(
@@ -1061,12 +1570,17 @@ class ReleasePipelineTests(unittest.TestCase):
             mock_candidate_signature = root / "mock-candidate-signature.json"
             _write_json_for_test(
                 mock_candidate_signature,
-                _release_signature(mock_candidate_release, decision="publish"),
+                _release_signature(
+                    mock_candidate_release,
+                    decision="publish",
+                    private_key=private_key,
+                ),
             )
             mock_candidate_publish = _run_pipeline(
                 "publish", "--release-dir", str(mock_candidate_release),
                 "--target", str(mock_candidate_target),
                 "--signature", str(mock_candidate_signature),
+                *_approval_cli(keyring, registry, checker_keyring),
             )
             self.assertEqual(2, mock_candidate_publish.returncode)
             self.assertIn('"code": "artifact_tampered"', mock_candidate_publish.stderr)
@@ -1082,22 +1596,734 @@ class ReleasePipelineTests(unittest.TestCase):
                 legacy_release = root / f"release-{name}"
                 legacy_stage = _run_pipeline(
                     "stage", "--release-dir", str(legacy_release),
-                    "--target", str(legacy_target), "--run-dir", str(n1_run),
-                    "--run-dir", str(n2_run),
+                    "--target", str(legacy_target),
+                    "--similarity-evidence", str(similarity_evidence),
+                    "--similarity-trusted-keys", str(checker_keyring),
+                    *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
                 )
                 self.assertEqual(0, legacy_stage.returncode, legacy_stage.stderr)
                 legacy_signature = root / f"signature-{name}"
                 _write_json_for_test(
                     legacy_signature,
-                    _release_signature(legacy_release, decision="publish"),
+                    _release_signature(
+                        legacy_release,
+                        decision="publish",
+                        private_key=private_key,
+                    ),
                 )
                 refused = _run_pipeline(
                     "publish", "--release-dir", str(legacy_release),
                     "--target", str(legacy_target), "--signature", str(legacy_signature),
+                    *_approval_cli(keyring, registry, checker_keyring),
                 )
                 self.assertEqual(2, refused.returncode)
                 self.assertIn('"code": "target_protected"', refused.stderr)
                 self.assertEqual(legacy_before, legacy_target.read_bytes())
+
+
+class AdversarialTrustBoundaryTests(unittest.TestCase):
+    def test_public_key_fingerprint_is_canonical_subject_public_key_info_der(self) -> None:
+        pipeline_v2 = _pipeline_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, keyring_path, _ = _approval_material(root)
+            keyring = json.loads(keyring_path.read_text(encoding="utf-8"))
+            public_key_pem = keyring["keys"][0]["publicKeyPem"]
+            converted = subprocess.run(
+                ["openssl", "pkey", "-pubin", "-outform", "DER"],
+                input=public_key_pem.encode("utf-8"),
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, converted.returncode, converted.stderr)
+
+            self.assertEqual(
+                hashlib.sha256(converted.stdout).hexdigest(),
+                pipeline_v2._ed25519_public_key_fingerprint(public_key_pem),
+            )
+
+    def _release_runs(self, root: Path) -> list[Path]:
+        runs = []
+        for level in ("N1", "N2"):
+            for group, count in (("lex", 504), ("rc", 496)):
+                runs.append(
+                    _reviewed_run(
+                        root,
+                        name=f"adversarial-{level.lower()}-{group}",
+                        level=level,
+                        records=_distributed_release_records(
+                            level,
+                            count,
+                            seed=f"adversarial-{level.lower()}-{group}",
+                            group=group,
+                        ),
+                        wave=1,
+                        group=group,
+                    )
+                )
+        return runs
+
+    def _staged_release(self, root: Path, *, target_payload: object | None = None) -> tuple[Path, Path]:
+        self.private_key, self.keyring, self.registry = _approval_material(root)
+        runs = self._release_runs(root)
+        target = root / "bank.json"
+        _write_json_for_test(
+            target,
+            target_payload if target_payload is not None else {"source": "jlptv2", "questions": []},
+        )
+        release_dir = root / "release"
+        similarity_evidence = root / "similarity-evidence.json"
+        self.checker_keyring = _write_external_similarity_evidence(
+            similarity_evidence, runs
+        )
+        staged = _run_pipeline(
+            "stage",
+            "--release-dir", str(release_dir),
+            "--target", str(target),
+            "--similarity-evidence", str(similarity_evidence),
+            "--similarity-trusted-keys", str(self.checker_keyring),
+            *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
+        )
+        self.assertEqual(0, staged.returncode, staged.stderr)
+        return release_dir, target
+
+    def test_stage_requires_external_embedding_and_official_corpus_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = self._release_runs(root)
+            target = root / "bank.json"
+            _write_json_for_test(target, {"source": "jlptv2", "questions": []})
+            release_dir = root / "release"
+
+            staged = _run_pipeline(
+                "stage",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
+            )
+
+            self.assertEqual(2, staged.returncode, staged.stdout)
+            self.assertIn('"code": "external_similarity_gate_required"', staged.stderr)
+            self.assertFalse(release_dir.exists())
+
+    def test_self_reported_similarity_status_and_placeholder_hashes_cannot_unlock_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = self._release_runs(root)
+            target = root / "bank.json"
+            _write_json_for_test(target, {"source": "jlptv2", "questions": []})
+            _, checker_keyring, _ = _approval_material(root, key_id="unrelated-checker")
+            fake_evidence = root / "self-reported-evidence.json"
+            _write_json_for_test(
+                fake_evidence,
+                {
+                    "evidenceVersion": 1,
+                    "contractSha256": hashlib.sha256(CONTRACT_PATH.read_bytes()).hexdigest(),
+                    "questionSetSha256": _question_set_sha256_for_runs(runs),
+                    "checkedAt": datetime.now(timezone.utc).isoformat(),
+                    "embedding": {
+                        "status": "passed-external",
+                        "provider": "self-report",
+                        "model": "self-report",
+                        "indexSha256": "1" * 64,
+                        "receiptSha256": "2" * 64,
+                    },
+                    "officialCorpus": {
+                        "status": "passed-external",
+                        "checkerVersion": "self-report",
+                        "corpusSha256": "3" * 64,
+                        "receiptSha256": "4" * 64,
+                    },
+                },
+            )
+
+            staged = _run_pipeline(
+                "stage",
+                "--release-dir", str(root / "release"),
+                "--target", str(target),
+                "--similarity-evidence", str(fake_evidence),
+                "--similarity-trusted-keys", str(checker_keyring),
+                *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
+            )
+
+            self.assertEqual(2, staged.returncode, staged.stdout)
+            self.assertIn('"code": "external_similarity_gate_invalid"', staged.stderr)
+            self.assertFalse((root / "release").exists())
+
+    def test_stage_rejects_checkers_that_share_a_public_key_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = self._release_runs(root)
+            target = root / "bank.json"
+            _write_json_for_test(target, {"source": "jlptv2", "questions": []})
+            evidence_path = root / "shared-checker-key-evidence.json"
+            checker_keyring = _write_external_similarity_evidence(evidence_path, runs)
+            keyring = json.loads(checker_keyring.read_text(encoding="utf-8"))
+            entries = {entry["role"]: entry for entry in keyring["keys"]}
+            entries["official_corpus_checker"]["publicKeyPem"] = entries[
+                "embedding_checker"
+            ]["publicKeyPem"]
+            _write_json_for_test(checker_keyring, keyring)
+            _resign_similarity_component(
+                evidence_path,
+                kind="officialCorpus",
+                private_key=root / "fixture-embedding-checker-private.pem",
+            )
+
+            staged = _run_pipeline(
+                "stage",
+                "--release-dir", str(root / "release"),
+                "--target", str(target),
+                "--similarity-evidence", str(evidence_path),
+                "--similarity-trusted-keys", str(checker_keyring),
+                *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
+            )
+
+            self.assertEqual(2, staged.returncode, staged.stdout)
+            self.assertIn('"code": "external_similarity_gate_invalid"', staged.stderr)
+            self.assertIn("distinct public keys", staged.stderr)
+            self.assertFalse((root / "release").exists())
+
+    def test_checker_role_mismatch_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = self._release_runs(root)
+            target = root / "bank.json"
+            _write_json_for_test(target, {"source": "jlptv2", "questions": []})
+            evidence_path = root / "wrong-role-evidence.json"
+            checker_keyring = _write_external_similarity_evidence(evidence_path, runs)
+            keyring = json.loads(checker_keyring.read_text(encoding="utf-8"))
+            embedding = next(
+                entry for entry in keyring["keys"] if entry["role"] == "embedding_checker"
+            )
+            embedding["role"] = "human_release_owner"
+            _write_json_for_test(checker_keyring, keyring)
+
+            staged = _run_pipeline(
+                "stage",
+                "--release-dir", str(root / "release"),
+                "--target", str(target),
+                "--similarity-evidence", str(evidence_path),
+                "--similarity-trusted-keys", str(checker_keyring),
+                *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
+            )
+
+            self.assertEqual(2, staged.returncode, staged.stdout)
+            self.assertIn('"code": "external_similarity_gate_invalid"', staged.stderr)
+            self.assertIn("expected 'embedding_checker'", staged.stderr)
+            self.assertFalse((root / "release").exists())
+
+    def test_human_approval_cannot_reuse_a_current_checker_key_in_the_same_keyring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = self._release_runs(root)
+            target = root / "bank.json"
+            _write_json_for_test(target, {"source": "jlptv2", "questions": []})
+            evidence_path = root / "shared-human-key-evidence.json"
+            checker_keyring = _write_external_similarity_evidence(evidence_path, runs)
+            combined = json.loads(checker_keyring.read_text(encoding="utf-8"))
+            embedding = next(
+                entry for entry in combined["keys"] if entry["role"] == "embedding_checker"
+            )
+            combined["keys"].append(
+                {
+                    "keyId": "human-alias-of-embedding-checker",
+                    "algorithm": "Ed25519",
+                    "role": "human_release_owner",
+                    "approvedBy": "human-release-owner",
+                    "publicKeyPem": embedding["publicKeyPem"],
+                }
+            )
+            combined_keyring = root / "combined-trusted-keys.json"
+            _write_json_for_test(combined_keyring, combined)
+            release_dir = root / "release"
+            staged = _run_pipeline(
+                "stage",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--similarity-evidence", str(evidence_path),
+                "--similarity-trusted-keys", str(combined_keyring),
+                *[value for run_dir in runs for value in ("--run-dir", str(run_dir))],
+            )
+            self.assertEqual(0, staged.returncode, staged.stderr)
+            signature_path = root / "shared-key-publish-signature.json"
+            _write_json_for_test(
+                signature_path,
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=root / "fixture-embedding-checker-private.pem",
+                    key_id="human-alias-of-embedding-checker",
+                ),
+            )
+            before = target.read_bytes()
+
+            refused = _run_pipeline(
+                "publish",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--signature", str(signature_path),
+                *_approval_cli(
+                    combined_keyring,
+                    root / "approval-consumptions.jsonl",
+                    combined_keyring,
+                ),
+            )
+
+            self.assertEqual(2, refused.returncode, refused.stdout)
+            self.assertIn('"code": "signature_role_conflict"', refused.stderr)
+            self.assertEqual(before, target.read_bytes())
+
+    def test_replacing_similarity_evidence_invalidates_the_existing_human_approval(self) -> None:
+        pipeline_v2 = _pipeline_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release_dir, target = self._staged_release(root)
+            approval_path = root / "publish-signature.json"
+            approval = _release_signature(
+                release_dir,
+                decision="publish",
+                private_key=self.private_key,
+            )
+            _write_json_for_test(approval_path, approval)
+            expected = {
+                key: str(approval[key])
+                for key in (
+                    "releaseId",
+                    "releaseNonce",
+                    "contractSha256",
+                    "candidateSha256",
+                    "similarityEvidenceSha256",
+                    "embeddingReceiptSha256",
+                    "officialCorpusReceiptSha256",
+                    "targetBeforeSha256",
+                )
+            }
+            expected["embeddingReceiptSha256"] = "f" * 64
+
+            with self.assertRaisesRegex(pipeline_v2.PipelineError, "does not match"):
+                pipeline_v2._validated_signature(
+                    approval_path,
+                    decision="publish",
+                    expected=expected,
+                    trusted_keys_path=self.keyring,
+                )
+
+            before = target.read_bytes()
+            evidence_path = release_dir / "similarity_evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["embedding"]["model"] = "tampered-after-approval"
+            _write_json_for_test(evidence_path, evidence)
+            refused = _run_pipeline(
+                "publish",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--signature", str(approval_path),
+                *_approval_cli(self.keyring, self.registry, self.checker_keyring),
+            )
+            self.assertEqual(2, refused.returncode, refused.stdout)
+            self.assertIn('"code": "artifact_tampered"', refused.stderr)
+            self.assertEqual(before, target.read_bytes())
+
+    def test_exact_dedupe_cannot_leave_a_text_grammar_singleton(self) -> None:
+        contract_v2 = _contract_module()
+
+        def grouped(group: str, passage: str, stem: str) -> dict[str, object]:
+            return _question(
+                qtype="text_grammar",
+                passage=passage,
+                group=group,
+                stem=stem,
+            )
+
+        duplicate = grouped("a", "文章A。（1）（2）", "A-1")
+        result = contract_v2.sanitize_pool(
+            [
+                duplicate,
+                copy.deepcopy(duplicate),
+                grouped("b", "文章B。（1）（2）", "B-1"),
+                grouped("b", "文章B。（1）（2）", "B-2"),
+                grouped("c", "文章C。（1）（2）", "C-1"),
+                grouped("c", "文章C。（1）（2）", "C-2"),
+            ],
+            expected_level="N1",
+            expected_group="lex",
+        )
+        group_sizes: dict[str, int] = {}
+        for record in result["records"]:
+            group_id = record["groupId"]
+            group_sizes[group_id] = group_sizes.get(group_id, 0) + 1
+
+        self.assertNotIn(1, group_sizes.values(), result)
+        self.assertTrue(result["fatal"], result)
+
+    def test_one_word_explanation_cannot_enter_the_v2_contract(self) -> None:
+        contract_v2 = _contract_module()
+
+        with self.assertRaises(contract_v2.QuestionValidationError):
+            contract_v2.normalize_question(_question(explanation="短"))
+
+    def test_eight_character_placeholder_explanation_cannot_pass_as_detailed(self) -> None:
+        contract_v2 = _contract_module()
+        choices = ["ため", "ので", "のに", "なら"]
+        placeholder = {
+            "correctAnswerMeaningUsage": "ので正确答案占位说明",
+            "knowledgePoint": "知识要点占位说明文字",
+            "whyCorrect": "因为ので正确占位说明",
+            "distractorReasons": [
+                {"choice": choice, "reason": f"{choice}错误原因占位说明"}
+                for choice in ("ため", "のに", "なら")
+            ],
+        }
+
+        with self.assertRaises(contract_v2.QuestionValidationError) as raised:
+            contract_v2.normalize_question(
+                _question(choices=choices, answerIndex=1, explanation=placeholder)
+            )
+
+        self.assertIn("explanation", str(raised.exception))
+
+    def test_deterministic_fuzzy_gate_rejects_a_near_duplicate(self) -> None:
+        contract_v2 = _contract_module()
+        pipeline_v2 = _pipeline_module()
+        first = contract_v2.normalize_question(
+            _question(stem="会議が終わる（　）、資料を提出してください。")
+        )
+        second = contract_v2.normalize_question(
+            _question(stem="会議が終了する（　）、資料を提出してください。")
+        )
+
+        issues = pipeline_v2._fuzzy_similarity_issues([first, second])
+
+        self.assertEqual("fuzzy_duplicate", issues[0]["code"])
+        self.assertEqual({first["id"], second["id"]}, set(issues[0]["questionIds"]))
+
+    def test_single_qtype_cannot_satisfy_the_n1_n2_release_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            n1_run = _reviewed_run(
+                root,
+                name="single-n1",
+                level="N1",
+                records=_release_records("N1", 1000, seed="single-n1"),
+                wave=1,
+            )
+            n2_run = _reviewed_run(
+                root,
+                name="single-n2",
+                level="N2",
+                records=_release_records("N2", 1000, seed="single-n2"),
+                wave=1,
+            )
+            target = root / "bank.json"
+            _write_json_for_test(target, {"source": "jlptv2", "questions": []})
+            release_dir = root / "release"
+            staged = _run_pipeline(
+                "stage",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--run-dir", str(n1_run),
+                "--run-dir", str(n2_run),
+            )
+
+            self.assertEqual(2, staged.returncode, staged.stdout)
+            self.assertIn('"code": "release_distribution_shortfall"', staged.stderr)
+            self.assertFalse(release_dir.exists())
+
+    def test_plain_json_approval_cannot_be_reused_across_release_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release_a, target = self._staged_release(root)
+            run_dirs = sorted(path for path in root.glob("adversarial-*-*") if path.is_dir())
+            release_b = root / "release-b"
+            similarity_evidence = root / "similarity-evidence.json"
+            staged_b = _run_pipeline(
+                "stage",
+                "--release-dir", str(release_b),
+                "--target", str(target),
+                "--similarity-evidence", str(similarity_evidence),
+                "--similarity-trusted-keys", str(self.checker_keyring),
+                *[value for run_dir in run_dirs for value in ("--run-dir", str(run_dir))],
+            )
+            self.assertEqual(0, staged_b.returncode, staged_b.stderr)
+            signature_path = root / "approval-from-a.json"
+            _write_json_for_test(
+                signature_path,
+                _release_signature(
+                    release_a,
+                    decision="publish",
+                    private_key=self.private_key,
+                ),
+            )
+
+            reused = _run_pipeline(
+                "publish",
+                "--release-dir", str(release_b),
+                "--target", str(target),
+                "--signature", str(signature_path),
+                *_approval_cli(self.keyring, self.registry, self.checker_keyring),
+            )
+
+            self.assertEqual(2, reused.returncode, reused.stdout)
+            self.assertIn('"code": "signature_invalid"', reused.stderr)
+
+    def test_ed25519_approval_rejects_unknown_expired_and_consumed_signatures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release_dir, target = self._staged_release(root)
+            before = target.read_bytes()
+            linked_runs = sorted(path for path in root.glob("adversarial-*-*") if path.is_dir())
+            self.assertTrue(linked_runs)
+            for run_dir in linked_runs:
+                run_manifest = json.loads(
+                    (run_dir / "manifest.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual("staged", run_manifest["state"])
+                self.assertEqual("staged", run_manifest["releaseLinks"][0]["state"])
+
+            unknown_path = root / "unknown-key-signature.json"
+            _write_json_for_test(
+                unknown_path,
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=self.private_key,
+                    key_id="unknown-key",
+                ),
+            )
+            unknown = _run_pipeline(
+                "publish",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--signature", str(unknown_path),
+                *_approval_cli(self.keyring, self.registry, self.checker_keyring),
+            )
+            self.assertEqual(2, unknown.returncode, unknown.stdout)
+            self.assertIn('"code": "signature_unknown_key"', unknown.stderr)
+            self.assertEqual(before, target.read_bytes())
+
+            now = datetime.now(timezone.utc)
+            expired_path = root / "expired-signature.json"
+            _write_json_for_test(
+                expired_path,
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=self.private_key,
+                    issued_at=now - timedelta(hours=2),
+                    expires_at=now - timedelta(hours=1),
+                ),
+            )
+            expired = _run_pipeline(
+                "publish",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--signature", str(expired_path),
+                *_approval_cli(self.keyring, self.registry, self.checker_keyring),
+            )
+            self.assertEqual(2, expired.returncode, expired.stdout)
+            self.assertIn('"code": "signature_expired"', expired.stderr)
+            self.assertEqual(before, target.read_bytes())
+
+            approval_path = root / "valid-signature.json"
+            approval = _release_signature(
+                release_dir,
+                decision="publish",
+                private_key=self.private_key,
+            )
+            _write_json_for_test(approval_path, approval)
+            published = _run_pipeline(
+                "publish",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--signature", str(approval_path),
+                *_approval_cli(self.keyring, self.registry, self.checker_keyring),
+            )
+            self.assertEqual(0, published.returncode, published.stderr)
+            for run_dir in linked_runs:
+                run_manifest = json.loads(
+                    (run_dir / "manifest.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual("published", run_manifest["state"])
+                self.assertEqual("published", run_manifest["releaseLinks"][0]["state"])
+            registry_before = self.registry.read_bytes()
+            events = [json.loads(line) for line in registry_before.splitlines()]
+            self.assertEqual(["reserved", "consumed"], [event["event"] for event in events])
+
+            copied_release = root / "copied-release"
+            shutil.copytree(release_dir, copied_release)
+            replayed = _run_pipeline(
+                "publish",
+                "--release-dir", str(copied_release),
+                "--target", str(target),
+                "--signature", str(approval_path),
+                *_approval_cli(self.keyring, self.registry, self.checker_keyring),
+            )
+            self.assertEqual(2, replayed.returncode, replayed.stdout)
+            self.assertIn('"code": "signature_reused"', replayed.stderr)
+            self.assertEqual(registry_before, self.registry.read_bytes())
+
+    def test_publish_compare_and_swap_preserves_a_concurrent_target_update(self) -> None:
+        pipeline_v2 = _pipeline_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release_dir, target = self._staged_release(root)
+            signature_path = root / "publish-signature.json"
+            _write_json_for_test(
+                signature_path,
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=self.private_key,
+                ),
+            )
+            concurrent = b'{"source":"jlptv2","questions":[{"id":"concurrent-update"}]}\n'
+            original_write = pipeline_v2._write_bytes_atomic
+
+            def raced_write(
+                path: Path,
+                payload: bytes,
+                *,
+                expected_sha256: str | None = None,
+            ) -> None:
+                if Path(path).resolve() == target.resolve():
+                    target.write_bytes(concurrent)
+                original_write(Path(path), payload, expected_sha256=expected_sha256)
+
+            pipeline_v2._write_bytes_atomic = raced_write
+            self.addCleanup(setattr, pipeline_v2, "_write_bytes_atomic", original_write)
+
+            with self.assertRaisesRegex(pipeline_v2.PipelineError, "target"):
+                pipeline_v2.publish_release(
+                    release_dir=release_dir,
+                    target_path=target,
+                    signature_path=signature_path,
+                    trusted_keys_path=self.keyring,
+                    similarity_trusted_keys_path=self.checker_keyring,
+                    approval_registry_path=self.registry,
+                )
+
+            self.assertEqual(concurrent, target.read_bytes())
+
+    def test_rollback_compare_and_swap_preserves_a_concurrent_target_update(self) -> None:
+        pipeline_v2 = _pipeline_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release_dir, target = self._staged_release(root)
+            publish_signature = root / "publish-signature.json"
+            _write_json_for_test(
+                publish_signature,
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=self.private_key,
+                ),
+            )
+            pipeline_v2.publish_release(
+                release_dir=release_dir,
+                target_path=target,
+                signature_path=publish_signature,
+                trusted_keys_path=self.keyring,
+                similarity_trusted_keys_path=self.checker_keyring,
+                approval_registry_path=self.registry,
+            )
+            published_bytes = target.read_bytes()
+            rollback_signature = root / "rollback-signature.json"
+            _write_json_for_test(
+                rollback_signature,
+                _release_signature(
+                    release_dir,
+                    decision="rollback",
+                    private_key=self.private_key,
+                ),
+            )
+            concurrent = b'{"source":"jlptv2","questions":[{"id":"concurrent-update"}]}\n'
+            original_write = pipeline_v2._write_bytes_atomic
+
+            def raced_write(
+                path: Path,
+                payload: bytes,
+                *,
+                expected_sha256: str | None = None,
+            ) -> None:
+                if Path(path).resolve() == target.resolve():
+                    target.write_bytes(concurrent)
+                original_write(Path(path), payload, expected_sha256=expected_sha256)
+
+            pipeline_v2._write_bytes_atomic = raced_write
+            self.addCleanup(setattr, pipeline_v2, "_write_bytes_atomic", original_write)
+
+            with self.assertRaisesRegex(pipeline_v2.PipelineError, "target"):
+                pipeline_v2.rollback_release(
+                    release_dir=release_dir,
+                    target_path=target,
+                    signature_path=rollback_signature,
+                    trusted_keys_path=self.keyring,
+                    similarity_trusted_keys_path=self.checker_keyring,
+                    approval_registry_path=self.registry,
+                )
+
+            self.assertEqual(concurrent, target.read_bytes())
+            pipeline_v2._write_bytes_atomic = original_write
+            target.write_bytes(published_bytes)
+            resumed = pipeline_v2.rollback_release(
+                release_dir=release_dir,
+                target_path=target,
+                signature_path=rollback_signature,
+                trusted_keys_path=self.keyring,
+                similarity_trusted_keys_path=self.checker_keyring,
+                approval_registry_path=self.registry,
+            )
+            self.assertFalse(resumed["resumed"])
+            for reference in json.loads(
+                (release_dir / "manifest.json").read_text(encoding="utf-8")
+            )["runs"]:
+                run_manifest = json.loads(
+                    (Path(reference["path"]) / "manifest.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual("rolled_back", run_manifest["state"])
+                link = next(
+                    item
+                    for item in run_manifest["releaseLinks"]
+                    if item["releaseId"]
+                    == json.loads(
+                        (release_dir / "manifest.json").read_text(encoding="utf-8")
+                    )["releaseId"]
+                )
+                self.assertEqual("rolled_back", link["state"])
+
+    def test_renamed_target_with_mockv1_ids_is_content_protected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release_dir, target = self._staged_release(
+                root,
+                target_payload={
+                    "source": "legacy-custom",
+                    "questions": [{"id": "mockv1-n1-0001"}],
+                },
+            )
+            signature_path = root / "publish-signature.json"
+            _write_json_for_test(
+                signature_path,
+                _release_signature(
+                    release_dir,
+                    decision="publish",
+                    private_key=self.private_key,
+                ),
+            )
+            before = target.read_bytes()
+
+            refused = _run_pipeline(
+                "publish",
+                "--release-dir", str(release_dir),
+                "--target", str(target),
+                "--signature", str(signature_path),
+                *_approval_cli(self.keyring, self.registry, self.checker_keyring),
+            )
+
+            self.assertEqual(2, refused.returncode, refused.stdout)
+            self.assertIn('"code": "target_protected"', refused.stderr)
+            self.assertEqual(before, target.read_bytes())
 
 
 class LegacyAuditTests(unittest.TestCase):
@@ -1127,14 +2353,14 @@ class LegacyAuditTests(unittest.TestCase):
             report = json.loads(first_report.read_text(encoding="utf-8"))
             self.assertEqual(source_hash, report["source"]["sha256"])
             self.assertEqual(
-                "9338794400264f496be729f4e8d02c77b057354a630d879cbd6480853862b8ec",
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
                 report["conversionDryRun"]["sha256"],
             )
             self.assertEqual(
                 {
                     "raw": 1039,
-                    "sanitized": 1039,
-                    "unique": 1039,
+                    "sanitized": 0,
+                    "unique": 0,
                     "verified": 0,
                     "approved": 0,
                     "staged": 0,
@@ -1155,11 +2381,14 @@ class LegacyAuditTests(unittest.TestCase):
             )
             self.assertEqual(111, report["structure"]["legacyGroupedItems"])
             self.assertEqual(34, report["structure"]["legacyUniqueGroups"])
-            self.assertEqual(34, report["structure"]["v2UniqueGroupIds"])
+            self.assertEqual(0, report["structure"]["v2UniqueGroupIds"])
             self.assertEqual(0, report["deduplication"]["duplicateExact"])
             self.assertEqual(0, report["deduplication"]["identityConflicts"])
-            self.assertEqual(0, report["rejections"]["count"])
-            self.assertEqual({}, report["rejections"]["byReason"])
+            self.assertEqual(1039, report["rejections"]["count"])
+            self.assertEqual(
+                {"atomic_group_rejected": 111, "explanation_structure": 1039},
+                report["rejections"]["byReason"],
+            )
             self.assertEqual("missing", report["coverage"]["N1"]["rc"]["status"])
             self.assertEqual(0, report["coverage"]["N1"]["rc"]["raw"])
             self.assertEqual("missing", report["coverage"]["N2"]["lex"]["status"])

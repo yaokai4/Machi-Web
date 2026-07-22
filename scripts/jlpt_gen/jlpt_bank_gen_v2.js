@@ -81,7 +81,25 @@ const GEN_SCHEMA = {
           group: { type: 'string' },
           choices: { type: 'array', items: { type: 'string' }, minItems: 4, maxItems: 4 },
           answerIndex: { type: 'integer', minimum: 0, maximum: 3 },
-          explanation: { type: 'string' },
+          explanation: {
+            type: 'object',
+            required: ['correctAnswerMeaningUsage', 'knowledgePoint', 'whyCorrect', 'distractorReasons'],
+            properties: {
+              correctAnswerMeaningUsage: { type: 'string', minLength: 24 },
+              knowledgePoint: { type: 'string', minLength: 24 },
+              whyCorrect: { type: 'string', minLength: 24 },
+              distractorReasons: {
+                type: 'array', minItems: 3, maxItems: 3,
+                items: {
+                  type: 'object', required: ['choice', 'reason'],
+                  properties: {
+                    choice: { type: 'string' },
+                    reason: { type: 'string', minLength: 20 },
+                  },
+                },
+              },
+            },
+          },
           difficulty: { type: 'integer', minimum: 1, maximum: 5 },
         },
       },
@@ -95,12 +113,18 @@ const VERIFY_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['index', 'answerIndex', 'fatal'],
+        required: [
+          'index', 'answerIndex', 'answerAccepted', 'answerFatal',
+          'explanationAccepted', 'explanationFatal', 'explanationNote',
+        ],
         properties: {
           index: { type: 'integer' },
           answerIndex: { type: 'integer', minimum: -1, maximum: 3 },
-          fatal: { type: 'boolean' },
-          note: { type: 'string' },
+          answerAccepted: { type: 'boolean' },
+          answerFatal: { type: 'boolean' },
+          explanationAccepted: { type: 'boolean' },
+          explanationFatal: { type: 'boolean' },
+          explanationNote: { type: 'string' },
         },
       },
     },
@@ -123,11 +147,13 @@ function genPrompt(level, qtype, count, themeA, themeB) {
     '1. 每题恰好 4 个选项，恰好 1 个无争议正确答案；干扰项要有迷惑性但经得起母语者推敲，不得有第二个可辩护正确项。',
     '2. 词汇语法严格限制在该级别及以下（读解/听力文本可有极少量超纲词但不影响答题）。',
     '3. stem/passage/choices 全部日语。',
-    '4. 【explanation 极详细 · 每题必写全】用简体中文，面向备考者把这道题讲透，必须逐项包含：',
-    '   ①【正确答案的意思与用法】：该词/语法/表达的准确含义、词性、读音或活用、常见搭配与语感、适用场景；',
-    '   ②【涉及的知识点】：这道题考查的语法点或词汇知识（如接续、活用形、敬语层级、近义辨析、汉字音训、惯用固定用法等），点明规则；',
-    '   ③【为什么这个选项正确】：结合句意/语境说明为何该选项唯一成立；',
-    '   ④【逐一说明每个干扰项为什么错】：对其余 3 个选项各自说明它的意思是什么、为什么在此处不对（搭配不当/语义偏差/活用错误/语体不符/张冠李戴等），不要只笼统带过。',
+    '4. 【explanation 极详细 · 每题必写全】用简体中文输出结构化对象，四个键缺一不可：',
+    '   ① correctAnswerMeaningUsage：正确项的准确含义、词性、读音或活用、搭配、语感与适用场景；',
+    '   ② knowledgePoint：本题考查规则，如接续、活用、敬语层级、近义辨析或音训；',
+    '   ③ whyCorrect：结合句意说明为何该项唯一成立；',
+    '   ④ distractorReasons：恰好 3 个 {choice, reason}，逐一覆盖三个错误选项，说明意思与具体错误原因。',
+    '   三个核心段各至少 24 个有效字符，每个错误项理由至少 20 个有效字符；含答案的段落必须写出正确选项，每条错误理由必须写出对应选项。',
+    '   禁止“占位/待补充/同上/见上/TODO/TBD”等占位表达，三个核心段不得互相复制。',
     '   宁详勿简，写成能让学习者真正学会的讲解（通常 4-8 句以上）。',
     '5. 阅读/文章语法/听力：passage 完整原创；同一篇的多题 passage 一字不差重复，group 填同一短 slug；单题 passage 留空、group 留空。',
     '6. difficulty 为该级别内部难度 1-5（3=标准）。qtype 固定填 "' + qtype + '"。',
@@ -136,13 +162,19 @@ function genPrompt(level, qtype, count, themeA, themeB) {
 }
 
 function verifyPrompt(level, qtype, qs) {
-  const stripped = qs.map((q, i) => ({ index: i, stem: q.stem, passage: q.passage || '', choices: q.choices }))
+  const stripped = qs.map((q, i) => ({
+    index: i,
+    stem: q.stem,
+    passage: q.passage || '',
+    choices: q.choices,
+    explanation: q.explanation,
+  }))
   return [
     '你是 JLPT ' + level + ' 级资深考官，盲审一批 ' + level + ' 模拟题（题型：' + qtype + '）。你看不到出题人答案，必须完全独立作答。',
     QTYPE_SPEC[qtype] ? '【题型说明】' + QTYPE_SPEC[qtype] : '',
-    '逐题：1) 独立解题给出唯一正确 answerIndex(0-3)；若无正确项/多个可辩护/组句排序不唯一/即時応答无唯一得体应答，填 -1 且 fatal=true。',
-    '2) 检查日语是否自然、有无语法用字错误、难度是否明显偏离 ' + level + '（如 ' + level + ' 题里塞了超纲考点）。有致命问题 fatal=true 并在 note 说明。',
-    '3) 轻微瑕疵不算 fatal，仅在 note 备注。',
+    '逐题：1) 独立解题给出唯一正确 answerIndex(0-3)；若无正确项/多个可辩护/组句排序不唯一/即時応答无唯一得体应答，填 -1，answerAccepted=false 且 answerFatal=true。',
+    '2) 独立检查日语是否自然、答案是否唯一、难度是否明显偏离 ' + level + '；结论写入 answerAccepted/answerFatal。',
+    '3) 单独审查 explanation：核对正确项含义与用法、知识点、为何唯一正确，以及三个干扰项逐项错误理由；任何事实错误、遗漏或模板占位都令 explanationAccepted=false，严重误导令 explanationFatal=true，并在 explanationNote 给出具体依据。',
     '题目（JSON）：',
     JSON.stringify(stripped, null, 1),
     '逐题输出 verdicts，index 与输入对应。',
@@ -188,7 +220,7 @@ function sanitize(batch, raw) {
     if (!Array.isArray(q.choices) || q.choices.length !== 4) continue
     if (q.choices.some(c => typeof c !== 'string' || !c.trim())) continue
     if (!(Number.isInteger(q.answerIndex) && q.answerIndex >= 0 && q.answerIndex <= 3)) continue
-    if (!q.explanation) continue
+    if (!q.explanation || typeof q.explanation !== 'object' || Array.isArray(q.explanation)) continue
     const needsPassage = batch.qtype === 'text_grammar' || batch.qtype.startsWith('reading_') || LISTEN_QTYPES.has(batch.qtype)
     const minPassage = LISTEN_QTYPES.has(batch.qtype) ? (batch.qtype === 'listen_response' ? 6 : 20) : 30
     if (needsPassage && (!q.passage || q.passage.trim().length < minPassage)) continue
@@ -196,7 +228,7 @@ function sanitize(batch, raw) {
       level: batch.level, section: SECTION_OF[batch.qtype], qtype: batch.qtype,
       stem: q.stem.trim(), passage: (q.passage || '').trim(), group: (q.group || '').trim(),
       choices: q.choices.map(c => c.trim()), answerIndex: q.answerIndex,
-      explanation: String(q.explanation).trim(), difficulty: Math.min(5, Math.max(1, q.difficulty || 3)),
+      explanation: q.explanation, difficulty: Math.min(5, Math.max(1, q.difficulty || 3)),
       theme: batch.themeA,
     })
   }
@@ -225,7 +257,11 @@ async function runBatches(batches, phaseGen, phaseVer) {
       pack.qs.forEach((q, i) => {
         if (maps.length < 2) return
         const a = maps[0][i], b2 = maps[1][i]
-        const ok = a && b2 && !a.fatal && !b2.fatal && a.answerIndex === q.answerIndex && b2.answerIndex === q.answerIndex
+        const ok = a && b2 &&
+          a.answerAccepted && b2.answerAccepted && !a.answerFatal && !b2.answerFatal &&
+          a.explanationAccepted && b2.explanationAccepted &&
+          !a.explanationFatal && !b2.explanationFatal &&
+          a.answerIndex === q.answerIndex && b2.answerIndex === q.answerIndex
         if (ok) kept.push(q)
       })
       return { batch: pack.b.id, kept }

@@ -11,6 +11,15 @@ from pathlib import Path
 from typing import Any
 
 
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_fd = os.open(str(path), flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def dump_json_atomic(path: str, payload: Any, *, ensure_ascii: bool, indent: int) -> None:
     """Write JSON without exposing a partial/truncated destination on failure."""
     target = Path(path)
@@ -29,6 +38,7 @@ def dump_json_atomic(path: str, payload: Any, *, ensure_ascii: bool, indent: int
             output.flush()
             os.fsync(output.fileno())
         os.replace(str(temporary), str(target))
+        _fsync_directory(parent)
     except BaseException:
         if open_fd is not None:
             os.close(open_fd)

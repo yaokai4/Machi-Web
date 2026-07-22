@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -549,7 +550,9 @@ class AssembleBankTests(unittest.TestCase):
             )
 
             def record_fsync(fd: int) -> None:
-                events.append("fsync")
+                events.append(
+                    "directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync"
+                )
                 real_fsync(fd)
 
             def record_replace(source: str, target: str) -> None:
@@ -567,7 +570,7 @@ class AssembleBankTests(unittest.TestCase):
                     with contextlib.redirect_stdout(io.StringIO()):
                         assemble_bank.main(str(source_path), str(output_path))
 
-            self.assertEqual(["fsync", "replace"], events)
+            self.assertEqual(["file_fsync", "replace", "directory_fsync"], events)
             self.assertTrue(output_path.exists())
 
     def test_canonical_pool_builds_every_qtype_to_the_exact_target(self) -> None:
@@ -1439,7 +1442,9 @@ class BalanceAnswersTests(unittest.TestCase):
             )
 
             def record_fsync(fd: int) -> None:
-                events.append("fsync")
+                events.append(
+                    "directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync"
+                )
                 real_fsync(fd)
 
             def record_replace(source: str, target: str) -> None:
@@ -1454,7 +1459,7 @@ class BalanceAnswersTests(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     balance_answers.main(str(bank_path))
 
-            self.assertEqual(["fsync", "replace"], events)
+            self.assertEqual(["file_fsync", "replace", "directory_fsync"], events)
             self.assertTrue(bank_path.exists())
 
 

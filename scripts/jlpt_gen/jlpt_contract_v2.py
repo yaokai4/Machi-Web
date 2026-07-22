@@ -98,12 +98,76 @@ def _validate_contract(contract: dict[str, Any]) -> None:
             raise ContractError(f"sectionLayouts {level} contains invalid names")
         if any(type(item.get("durationSeconds")) is not int or item["durationSeconds"] <= 0 for item in layouts[level]):
             raise ContractError(f"sectionLayouts {level} contains invalid duration")
-    release = contract.get("releaseGate", {}).get("minimumApprovedUniqueStagedByLevel")
+    release_gate = contract.get("releaseGate", {})
+    release = release_gate.get("minimumApprovedUniqueStagedByLevel")
     if release != {"N1": 1000, "N2": 1000}:
         raise ContractError("first-phase release gate must be N1=1000 and N2=1000")
+    if release_gate.get("requiredRunGroupsByLevel") != {
+        "N1": ["lex", "rc"],
+        "N2": ["lex", "rc"],
+    }:
+        raise ContractError("release gate must require independent lex and rc runs")
+    section_minimums = release_gate.get("minimumUniqueBySection")
+    if not isinstance(section_minimums, dict) or set(section_minimums) != {"N1", "N2"}:
+        raise ContractError("release section minimums must define N1 and N2")
+    for level, minimums in section_minimums.items():
+        if (
+            not isinstance(minimums, dict)
+            or set(minimums) != {"vocab", "grammar", "reading", "listening"}
+            or any(type(value) is not int or value <= 0 for value in minimums.values())
+            or sum(minimums.values()) > release[level]
+        ):
+            raise ContractError(f"release section minimums are invalid for {level}")
+    if release_gate.get("minimumPaperCoverageCopiesByQtype") != 1:
+        raise ContractError("release qtype coverage must require one canonical paper")
+    similarity = contract.get("similarityGate")
+    if (
+        not isinstance(similarity, dict)
+        or type(similarity.get("fuzzyShingleSize")) is not int
+        or similarity["fuzzyShingleSize"] < 2
+        or not isinstance(similarity.get("fuzzyDiceThreshold"), (int, float))
+        or not 0 < similarity["fuzzyDiceThreshold"] < 1
+        or type(similarity.get("minimumCanonicalCharacters")) is not int
+        or similarity["minimumCanonicalCharacters"] < 1
+        or similarity.get("embeddingEvidenceRequired") is not True
+        or similarity.get("officialCorpusEvidenceRequired") is not True
+    ):
+        raise ContractError("similarity gate configuration is invalid")
     quality = contract.get("qualityGate")
     if not isinstance(quality, dict) or quality.get("minimumIndependentReviewers", 0) < 2:
         raise ContractError("quality gate requires at least two reviewers")
+    explanation_quality = contract.get("explanationQualityGate")
+    expected_explanation_minimums = {
+        "correctAnswerMeaningUsage": 24,
+        "knowledgePoint": 24,
+        "whyCorrect": 24,
+        "distractorReason": 20,
+    }
+    if (
+        not isinstance(explanation_quality, dict)
+        or explanation_quality.get("minimumCanonicalCharacters")
+        != expected_explanation_minimums
+        or explanation_quality.get("requireExplicitChoiceReference") is not True
+        or explanation_quality.get("requireDistinctCoreParts") is not True
+        or not isinstance(explanation_quality.get("forbiddenPlaceholderFragments"), list)
+        or not explanation_quality["forbiddenPlaceholderFragments"]
+        or any(
+            not isinstance(fragment, str) or not fragment
+            for fragment in explanation_quality["forbiddenPlaceholderFragments"]
+        )
+    ):
+        raise ContractError("explanation quality gate configuration is invalid")
+    explanation_schema = contract["questionSchema"]["properties"]["explanation"]["properties"]
+    if (
+        explanation_schema["correctAnswerMeaningUsage"].get("minLength") != 24
+        or explanation_schema["knowledgePoint"].get("minLength") != 24
+        or explanation_schema["whyCorrect"].get("minLength") != 24
+        or explanation_schema["distractorReasons"]["items"]["properties"]["reason"].get(
+            "minLength"
+        )
+        != 20
+    ):
+        raise ContractError("explanation schema minimums differ from quality gate")
 
 
 def load_contract(path: str | Path | None = None) -> dict[str, Any]:
@@ -246,16 +310,13 @@ def _validate_question_shape(question: Any) -> tuple[dict[str, Any], list[dict[s
     if qtype in qtypes and question["section"] != qtypes[qtype]["section"]:
         issues.append(_issue("section_mismatch", "section does not match qtype", field="section"))
 
-    for field in ("level", "section", "qtype", "stem", "passage", "group", "explanation"):
+    for field in ("level", "section", "qtype", "stem", "passage", "group"):
         if not isinstance(question[field], str):
             issues.append(_issue("field_type", "field must be a string", field=field))
     if "theme" in question and not isinstance(question["theme"], str):
         issues.append(_issue("field_type", "field must be a string", field="theme"))
     if isinstance(question["stem"], str) and not canonical_text(question["stem"]):
         issues.append(_issue("stem_required", "stem must not be blank", field="stem"))
-    if isinstance(question["explanation"], str) and not canonical_text(question["explanation"]):
-        issues.append(_issue("explanation_required", "explanation must not be blank", field="explanation"))
-
     choices = question["choices"]
     if not isinstance(choices, list) or len(choices) != 4:
         issues.append(_issue("choices_count", "choices must contain exactly four items", field="choices"))
@@ -269,6 +330,163 @@ def _validate_question_shape(question: Any) -> tuple[dict[str, Any], list[dict[s
     difficulty = question["difficulty"]
     if type(difficulty) is not int or not 1 <= difficulty <= 5:
         issues.append(_issue("difficulty", "difficulty must be an integer from 1 through 5", field="difficulty"))
+
+    explanation = question["explanation"]
+    explanation_keys = {
+        "correctAnswerMeaningUsage",
+        "knowledgePoint",
+        "whyCorrect",
+        "distractorReasons",
+    }
+    if not isinstance(explanation, dict) or set(explanation) != explanation_keys:
+        issues.append(
+            _issue(
+                "explanation_structure",
+                "explanation must contain the four required structured parts",
+                field="explanation",
+            )
+        )
+    else:
+        explanation_gate = contract["explanationQualityGate"]
+        minimums = explanation_gate["minimumCanonicalCharacters"]
+        forbidden_fragments = [
+            canonical_text(fragment).casefold()
+            for fragment in explanation_gate["forbiddenPlaceholderFragments"]
+        ]
+        canonical_core_parts: dict[str, str] = {}
+        for field in ("correctAnswerMeaningUsage", "knowledgePoint", "whyCorrect"):
+            value = explanation[field]
+            canonical_value = canonical_text(value) if isinstance(value, str) else ""
+            canonical_core_parts[field] = canonical_value
+            if not canonical_value or len(canonical_value) < minimums[field]:
+                issues.append(
+                    _issue(
+                        "explanation_detail",
+                        f"{field} must contain at least {minimums[field]} canonical characters",
+                        field=f"explanation.{field}",
+                    )
+                )
+            elif any(fragment in canonical_value.casefold() for fragment in forbidden_fragments):
+                issues.append(
+                    _issue(
+                        "explanation_placeholder",
+                        "structured explanation contains a forbidden placeholder fragment",
+                        field=f"explanation.{field}",
+                    )
+                )
+        if (
+            explanation_gate["requireDistinctCoreParts"]
+            and all(canonical_core_parts.values())
+            and len(set(canonical_core_parts.values())) != 3
+        ):
+            issues.append(
+                _issue(
+                    "explanation_distinctness",
+                    "meaning/usage, knowledge point, and why-correct text must be distinct",
+                    field="explanation",
+                )
+            )
+        if (
+            explanation_gate["requireExplicitChoiceReference"]
+            and isinstance(choices, list)
+            and len(choices) == 4
+            and all(isinstance(choice, str) for choice in choices)
+            and type(answer_index) is int
+            and 0 <= answer_index <= 3
+        ):
+            correct_choice = canonical_text(choices[answer_index])
+            for field in ("correctAnswerMeaningUsage", "whyCorrect"):
+                if correct_choice not in canonical_core_parts[field]:
+                    issues.append(
+                        _issue(
+                            "explanation_choice_reference",
+                            f"{field} must explicitly reference the correct choice",
+                            field=f"explanation.{field}",
+                        )
+                    )
+        reasons = explanation["distractorReasons"]
+        if not isinstance(reasons, list) or len(reasons) != 3:
+            issues.append(
+                _issue(
+                    "distractor_reasons",
+                    "explanation requires exactly three distractor reasons",
+                    field="explanation.distractorReasons",
+                )
+            )
+        else:
+            reason_choices: list[str] = []
+            for index, reason in enumerate(reasons):
+                if not isinstance(reason, dict) or set(reason) != {"choice", "reason"}:
+                    issues.append(
+                        _issue(
+                            "distractor_reason_structure",
+                            "each distractor reason requires exact choice and reason fields",
+                            field=f"explanation.distractorReasons[{index}]",
+                        )
+                    )
+                    continue
+                choice = reason["choice"]
+                detail = reason["reason"]
+                if not isinstance(choice, str) or not canonical_text(choice):
+                    issues.append(
+                        _issue(
+                            "distractor_choice",
+                            "distractor choice must be a non-empty string",
+                            field=f"explanation.distractorReasons[{index}].choice",
+                        )
+                    )
+                else:
+                    reason_choices.append(canonical_text(choice))
+                canonical_detail = canonical_text(detail) if isinstance(detail, str) else ""
+                if not canonical_detail or len(canonical_detail) < minimums["distractorReason"]:
+                    issues.append(
+                        _issue(
+                            "distractor_reason_detail",
+                            "distractor reason must contain at least twenty canonical characters",
+                            field=f"explanation.distractorReasons[{index}].reason",
+                        )
+                    )
+                elif any(fragment in canonical_detail.casefold() for fragment in forbidden_fragments):
+                    issues.append(
+                        _issue(
+                            "explanation_placeholder",
+                            "distractor reason contains a forbidden placeholder fragment",
+                            field=f"explanation.distractorReasons[{index}].reason",
+                        )
+                    )
+                if (
+                    explanation_gate["requireExplicitChoiceReference"]
+                    and isinstance(choice, str)
+                    and canonical_text(choice)
+                    and canonical_text(choice) not in canonical_detail
+                ):
+                    issues.append(
+                        _issue(
+                            "distractor_choice_reference",
+                            "distractor reason must explicitly reference its choice",
+                            field=f"explanation.distractorReasons[{index}].reason",
+                        )
+                    )
+            if (
+                isinstance(choices, list)
+                and len(choices) == 4
+                and all(isinstance(choice, str) for choice in choices)
+                and type(answer_index) is int
+                and 0 <= answer_index <= 3
+            ):
+                expected_distractors = {
+                    canonical_text(choice)
+                    for index, choice in enumerate(choices)
+                    if index != answer_index
+                }
+                if set(reason_choices) != expected_distractors or len(reason_choices) != 3:
+                    issues.append(
+                        _issue(
+                            "distractor_reason_coverage",
+                            "distractor reasons must cover each incorrect choice exactly once",
+                            field="explanation.distractorReasons",
+                        )
+                    )
 
     if qtype in qtypes and isinstance(question["group"], str) and isinstance(question["passage"], str):
         mode = qtypes[qtype]["groupMode"]
@@ -295,6 +513,22 @@ def normalize_question(question: Any) -> dict[str, Any]:
     passage = canonical_text(raw["passage"])
     stem = canonical_text(raw["stem"])
     correct_answer = choices[raw["answerIndex"]]
+    raw_explanation = raw["explanation"]
+    explanation = {
+        "correctAnswerMeaningUsage": canonical_text(raw_explanation["correctAnswerMeaningUsage"]),
+        "knowledgePoint": canonical_text(raw_explanation["knowledgePoint"]),
+        "whyCorrect": canonical_text(raw_explanation["whyCorrect"]),
+        "distractorReasons": sorted(
+            [
+                {
+                    "choice": canonical_text(reason["choice"]),
+                    "reason": canonical_text(reason["reason"]),
+                }
+                for reason in raw_explanation["distractorReasons"]
+            ],
+            key=lambda reason: (reason["choice"], reason["reason"]),
+        ),
+    }
     identity_payload = {
         "identityVersion": contract["identityVersion"],
         "level": level,
@@ -320,7 +554,7 @@ def normalize_question(question: Any) -> dict[str, Any]:
     content_payload = {
         **identity_payload,
         "correctAnswer": correct_answer,
-        "explanation": canonical_text(raw["explanation"]),
+        "explanation": explanation,
         "difficulty": raw["difficulty"],
         "theme": canonical_text(raw.get("theme", "")),
     }
@@ -338,7 +572,7 @@ def normalize_question(question: Any) -> dict[str, Any]:
         "group": canonical_text(raw["group"]),
         "choices": choices,
         "answerIndex": raw["answerIndex"],
-        "explanation": canonical_text(raw["explanation"]),
+        "explanation": explanation,
         "difficulty": raw["difficulty"],
         "theme": canonical_text(raw.get("theme", "")),
     }
@@ -451,6 +685,27 @@ def sanitize_pool(
             duplicate["record"] = None
             duplicate["duplicateExact"] = True
             duplicate_exact += 1
+
+    # Exact deduplication and identity-conflict removal happen after the raw
+    # atomic-group shape check. Re-evaluate every group now so duplicates can
+    # never count as distinct members and leave an orphaned singleton behind.
+    for atomic_key, members in atomic_members.items():
+        qtype = atomic_key[1]
+        minimum = contract["qtypes"][qtype]["minimumGroupMembers"]
+        survivors = [member for member in members if member["record"] is not None]
+        if survivors and len(survivors) >= minimum:
+            continue
+        if not survivors and all(member["issues"] for member in members):
+            continue
+        for entry in members:
+            entry["record"] = None
+            if not any(issue["code"] == "atomic_group_rejected" for issue in entry["issues"]):
+                entry["issues"].append(
+                    _issue(
+                        "atomic_group_rejected",
+                        "deduplication must not leave an incomplete atomic group",
+                    )
+                )
 
     records = [entry["record"] for entry in entries if entry["record"] is not None]
     rejected = [
