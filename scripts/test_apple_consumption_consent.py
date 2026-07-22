@@ -495,6 +495,86 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         self.assertEqual(payload["consumptionPercentage"], 0)
         self.assertNotEqual(payload.get("refundPreference"), "DECLINE")
 
+    def test_source_linked_refund_removes_its_own_lot_before_customer_spend(self) -> None:
+        target = self._credit_topup("tx-target-before-other-refund")
+        other = self._credit_topup("tx-other-source-linked-refund")
+        granted = int(target["total_points"])
+        self.assertEqual(int(other["total_points"]), granted)
+
+        refunded = server.wallet_refund_topup(
+            self.conn,
+            other["order_no"],
+            reason="source-linked refund",
+            entry_type="refund_debit",
+        )
+        self.assertTrue(refunded["applied"])
+        server.wallet_post_ledger(
+            self.conn,
+            self.user_id,
+            "spend",
+            -granted,
+            source_type="wallet_purchase",
+            source_order_id="customer-use-after-other-refund",
+        )
+
+        attribution = server._apple_target_transaction_consumption(
+            self.conn, self.user_id, target
+        )
+        payload = server._apple_consumption_v2_payload(
+            self.conn, self.user_id, target
+        )
+
+        self.assertIsNotNone(attribution)
+        self.assertEqual(attribution["consumed"], granted)
+        self.assertEqual(attribution["removed"], 0)
+        self.assertEqual(attribution["remaining"], 0)
+        self.assertEqual(payload["consumptionPercentage"], 100000)
+        self.assertEqual(payload["refundPreference"], "DECLINE")
+
+    def test_unknown_source_linked_refund_fails_closed(self) -> None:
+        target = self._credit_topup("tx-target-before-unknown-refund")
+        server.wallet_post_ledger(
+            self.conn,
+            self.user_id,
+            "refund_debit",
+            -100,
+            source_type="refund",
+            source_order_id="unknown-topup-order",
+        )
+
+        attribution = server._apple_target_transaction_consumption(
+            self.conn, self.user_id, target
+        )
+        payload = server._apple_consumption_v2_payload(
+            self.conn, self.user_id, target
+        )
+
+        self.assertIsNone(attribution)
+        self.assertNotIn("consumptionPercentage", payload)
+        self.assertNotIn("refundPreference", payload)
+
+    def test_source_bearing_admin_debit_fails_closed(self) -> None:
+        target = self._credit_topup("tx-target-before-invalid-admin-debit")
+        server.wallet_post_ledger(
+            self.conn,
+            self.user_id,
+            "admin_adjustment",
+            -100,
+            source_type="admin",
+            source_order_id="unexpected-source-order",
+        )
+
+        attribution = server._apple_target_transaction_consumption(
+            self.conn, self.user_id, target
+        )
+        payload = server._apple_consumption_v2_payload(
+            self.conn, self.user_id, target
+        )
+
+        self.assertIsNone(attribution)
+        self.assertNotIn("consumptionPercentage", payload)
+        self.assertNotIn("refundPreference", payload)
+
     def test_refunded_guide_spend_reverses_the_original_topup_lot_allocation(self) -> None:
         target = self._credit_topup("tx-guide-spend-refunded")
         granted = int(target["total_points"])
@@ -696,6 +776,41 @@ class AppleConsumptionConsentTests(unittest.TestCase):
                     original["id"],
                 ),
             )
+
+    def test_guide_sample_snapshot_survives_deploy_mapping_removal(self) -> None:
+        slug, expected_product_id = next(iter(server.GUIDE_HERO_IAP_PRODUCTS.items()))
+        product_row = self.conn.execute(
+            "SELECT * FROM guide_products WHERE slug=? AND status='published'",
+            (slug,),
+        ).fetchone()
+        self.assertIsNotNone(product_row)
+        tx_id = "tx-guide-snapshot-after-deploy-change"
+        purchase_result = server.guide_credit_iap_purchase(
+            self.conn,
+            self.user_id,
+            dict(product_row),
+            provider_trade_no="apple:" + tx_id,
+        )
+        order = dict(self.conn.execute(
+            "SELECT * FROM guide_orders WHERE id=?",
+            (purchase_result["orderId"],),
+        ).fetchone())
+        self.assertEqual(order["apple_sample_content_provided"], 1)
+        self.assertEqual(order["apple_product_id_snapshot"], expected_product_id)
+
+        transaction = self._transaction(tx_id)
+        transaction["productId"] = expected_product_id
+        purchase = server._apple_consumption_purchase(
+            self.conn, self.user_id, transaction
+        )
+        self.assertIsNotNone(purchase)
+        with patch.object(server, "GUIDE_HERO_IAP_PRODUCTS", {}):
+            payload = server._apple_consumption_payload(
+                self.conn, self.user_id, purchase
+            )
+
+        self.assertIsNotNone(payload)
+        self.assertTrue(payload["sampleContentProvided"])
 
     def test_guide_sample_content_false_snapshot_cannot_flip_true_later(self) -> None:
         slug, expected_product_id = list(server.GUIDE_HERO_IAP_PRODUCTS.items())[1]
@@ -1045,6 +1160,53 @@ class AppleConsumptionConsentTests(unittest.TestCase):
             )
         self.assertEqual(counts["processed"], 0)
         retry_network.assert_not_called()
+
+    def test_withdrawal_before_urlopen_blocks_network_for_claimed_job(self) -> None:
+        tx_id = "tx-withdraw-before-urlopen"
+        event_id = "event-withdraw-before-urlopen"
+        self._credit_topup(tx_id)
+        grant = self._record_consent(True)
+        withdrawn: dict = {}
+
+        notification = {
+            "notificationType": "CONSUMPTION_REQUEST",
+            "notificationUUID": event_id,
+            "data": {
+                "bundleId": server.APPLE_IAP_BUNDLE_ID or "com.yaokai.kaizi",
+                "environment": "Production",
+                "signedTransactionInfo": "signed-transaction",
+            },
+        }
+        transaction = self._transaction(tx_id)
+        handler = self._webhook_handler()
+        network = MagicMock(return_value=_response())
+
+        def token_after_withdrawal() -> str:
+            withdrawn.update(self._record_consent(False))
+            return "jwt"
+
+        with patch.object(server, "decode_apple_jws_payload", return_value=(notification, True)), \
+             patch.object(server, "verify_apple_transaction", return_value=transaction), \
+             patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", side_effect=token_after_withdrawal), \
+             patch.object(server.urllib.request, "urlopen", network):
+            handler.api_payment_webhook_apple(self.conn)
+
+        self.assertNotEqual(grant["id"], withdrawn["id"])
+        network.assert_not_called()
+        self.assertEqual(handler._captured["status"], 200)
+        self.assertEqual(handler._captured["data"]["consumption"], "consent_withdrawn")
+        job = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone())
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["last_consent_event_id"], withdrawn["id"])
+        attempt = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_delivery_attempts WHERE outbox_id=?",
+            (job["id"],),
+        ).fetchone())
+        self.assertEqual(attempt["outcome"], "consent_withdrawn")
+        self.assertEqual(attempt["consent_event_id"], withdrawn["id"])
 
     def test_account_deletion_records_withdrawal_and_cancels_pending_delivery(self) -> None:
         tx_id = "tx-delete-withdrawal"

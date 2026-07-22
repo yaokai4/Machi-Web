@@ -13974,20 +13974,30 @@ def _apple_target_transaction_consumption(
         order: dict[str, Any]) -> dict[str, int] | None:
     """Replay immutable wallet lots and attribute actual ``spend`` debits FIFO.
 
-    Refund/chargeback/admin debits still remove coins from lots, but never count
-    as customer consumption.  If historical balance evidence doesn't reconcile
-    or the target credit is incomplete, return None so the optional percentage
-    is omitted instead of guessed.
+    A source-linked top-up refund removes that order's own topup+bonus lots
+    first.  If those coins were already spent, the remaining live-balance
+    clawback falls through to global FIFO but is still removal, never customer
+    consumption.  Admin/debt-recovery debits use FIFO.  If source ownership or
+    historical balance evidence doesn't reconcile, return None so Apple's
+    optional percentage is omitted instead of guessed.
     """
     target_order_no = str(order.get("order_no") or "")
     granted = int(order.get("total_points") or 0)
     if not target_order_no or granted <= 0:
         return None
     rows = conn.execute(
-        "SELECT entry_type, points_delta, balance_after, source_type, source_order_id, created_at, id "
+        "SELECT entry_type, points_delta, balance_after, source_type, source_order_id, "
+        "idempotency_key, created_at, id "
         "FROM wallet_ledger_entries WHERE user_id=? ORDER BY created_at, id",
         (user_id,),
     ).fetchall()
+    topup_order_totals = {
+        str(raw["order_no"]): int(raw["total_points"] or 0)
+        for raw in conn.execute(
+            "SELECT order_no, total_points FROM wallet_topup_orders WHERE user_id=?",
+            (user_id,),
+        ).fetchall()
+    }
     refund_links = {
         str(raw["id"]): {
             "spend_id": str(raw["wallet_ledger_entry_id"] or ""),
@@ -14002,6 +14012,7 @@ def _apple_target_transaction_consumption(
     lots: list[dict[str, Any]] = []
     spend_allocations: dict[str, list[tuple[dict[str, Any], int]]] = {}
     reversed_spends: set[str] = set()
+    source_clawbacks: dict[str, int] = {}
     running_balance = 0
     target_credited = 0
     target_consumed = 0
@@ -14037,16 +14048,56 @@ def _apple_target_transaction_consumption(
                 str(row.get("source_order_id") or "") == target_order_no
                 and str(row.get("entry_type") or "") in ("topup", "bonus")
             )
-            lots.append({"remaining": delta, "target": is_target})
+            lots.append({
+                "initial": delta,
+                "remaining": delta,
+                "target": is_target,
+                "origin_order_no": str(row.get("source_order_id") or ""),
+            })
             if is_target:
                 target_credited += delta
             continue
         if delta >= 0:
             continue
         remaining_debit = -delta
-        is_consumption = str(row.get("entry_type") or "") == "spend"
+        entry_type = str(row.get("entry_type") or "")
+        source_type = str(row.get("source_type") or "")
+        source_order_id = str(row.get("source_order_id") or "")
+        idempotency_key = str(row.get("idempotency_key") or "")
+        is_consumption = entry_type == "spend"
+        allocation_lots = lots
+        if entry_type in ("refund_debit", "chargeback_debit") and source_type == "refund":
+            if idempotency_key.startswith("refund-recovery:"):
+                # Admin debt recovery points at a refunded guide order, not at a
+                # top-up grant.  It is an explicit non-consumption FIFO debit.
+                allocation_lots = lots
+            else:
+                expected_grant = topup_order_totals.get(source_order_id)
+                source_lots = [
+                    lot for lot in lots
+                    if str(lot["origin_order_no"]) == source_order_id
+                ]
+                if (not source_order_id or expected_grant is None
+                        or expected_grant <= 0
+                        or sum(int(lot["initial"]) for lot in source_lots) != expected_grant):
+                    return None
+                clawed_back = source_clawbacks.get(source_order_id, 0) + remaining_debit
+                if clawed_back > expected_grant:
+                    return None
+                source_clawbacks[source_order_id] = clawed_back
+                allocation_lots = source_lots + [
+                    lot for lot in lots
+                    if str(lot["origin_order_no"]) != source_order_id
+                ]
+        elif not is_consumption:
+            if (entry_type != "admin_adjustment" or source_type != "admin"
+                    or bool(source_order_id)):
+                # Only an explicitly source-less admin debit has documented
+                # FIFO semantics. Unknown/source-bearing debit semantics cannot
+                # become an Apple transaction-specific statement safely.
+                return None
         allocations: list[tuple[dict[str, Any], int]] = []
-        for lot in lots:
+        for lot in allocation_lots:
             available = int(lot["remaining"])
             if available <= 0:
                 continue
@@ -14070,16 +14121,25 @@ def _apple_target_transaction_consumption(
     ).fetchone()
     if (not balance_row
             or running_balance != int(balance_row["balance_points"] or 0)
-            or target_credited != granted):
+            or target_credited != granted
+            or any(
+                int(lot["remaining"]) < 0
+                or int(lot["remaining"]) > int(lot["initial"])
+                for lot in lots
+            )
+            or sum(int(lot["remaining"]) for lot in lots) != running_balance):
         return None
     target_remaining = sum(
         int(lot["remaining"]) for lot in lots if bool(lot["target"])
     )
+    if (target_consumed < 0 or target_removed < 0
+            or target_consumed + target_removed + target_remaining != granted):
+        return None
     return {
         "granted": granted,
-        "consumed": min(granted, target_consumed),
-        "removed": min(granted, target_removed),
-        "remaining": min(granted, target_remaining),
+        "consumed": target_consumed,
+        "removed": target_removed,
+        "remaining": target_remaining,
     }
 
 
@@ -14134,7 +14194,7 @@ def _apple_consumption_payload(
         product_id_snapshot = str(order.get("apple_product_id_snapshot") or "").strip()
         sample_content_provided = bool(
             int(order.get("apple_sample_content_provided") or 0) == 1
-            and product_id_snapshot in set(GUIDE_HERO_IAP_PRODUCTS.values())
+            and bool(product_id_snapshot)
             and str(purchase.get("transaction_product_id") or "") == product_id_snapshot
         )
         return {
@@ -14225,6 +14285,27 @@ def _apple_consumption_delivery_result(
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="PUT")
         req.add_header("Authorization", "Bearer " + token)
         req.add_header("Content-Type", "application/json")
+
+        # Token minting and payload construction can take place after the first
+        # consent read.  Re-read at the last possible point before network I/O
+        # and require this attempt to still be authorized by the exact same
+        # immutable consent event.  A withdrawal/account deletion is terminal;
+        # a newer grant can be picked up by a later retry, never by this claim.
+        latest_consent = apple_consumption_consent_state(conn, resolved_user_id)
+        latest_event = latest_consent.get("event") or {}
+        latest_event_id = str(latest_event.get("id") or "")
+        if (not latest_consent.get("granted")
+                or latest_event_id != result["consent_event_id"]):
+            if latest_event_id:
+                result["consent_event_id"] = latest_event_id
+            if latest_consent.get("granted"):
+                result.update(status="consent_event_changed", retryable=True)
+            else:
+                result.update(
+                    status=str(latest_consent.get("status") or "consent_missing"),
+                    retryable=False,
+                )
+            return result
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
             http_status = int(getattr(resp, "status", 0) or 200)
