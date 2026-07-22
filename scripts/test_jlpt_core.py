@@ -112,13 +112,10 @@ def main() -> None:
         assert conn.execute("SELECT COUNT(*) AS c FROM jlpt_exams").fetchone()["c"] >= 3
 
         uid = _make_user(conn)
-        # The canonical mockv1 exams are paid. This broad JLPT flow test is not
-        # an insufficient-balance test, so fund its fixture explicitly instead
-        # of relying on the historical fresh-DB price bug (all costs were 0).
-        server.wallet_post_ledger(
-            conn, uid, "topup", 10_000,
-            source_type="test_fixture", idempotency_key="jlpt-core-fixture-credit",
-        )
+        free_wallet_before = server.get_wallet_snapshot(conn, uid)
+        free_ledger_before = conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_ledger_entries WHERE user_id=?", (uid,)
+        ).fetchone()["c"]
         conn.commit()
 
         # 1) Practice: N5 vocab. Questions hide the answer + explanation.
@@ -260,13 +257,35 @@ def main() -> None:
         })
         assert cap["status"] == 409, cap
 
-        # 10) Online exam: list, start, answer, submit, history, session review.
-        cap = _get(uid, "api_guide_jlpt_exams", {"level": "N5"})
+        # 10) Online exam uses a dedicated funded user. All preceding practice,
+        # placement and vocabulary flows are free and must not touch uid's wallet.
+        assert (
+            server.get_wallet_snapshot(conn, uid)["balancePoints"]
+            == free_wallet_before["balancePoints"]
+            == 0
+        )
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_ledger_entries WHERE user_id=?", (uid,)
+        ).fetchone()["c"] == free_ledger_before == 0
+        paid_uid = _make_user(conn)
+        server.wallet_post_ledger(
+            conn, paid_uid, "topup", 10_000,
+            source_type="test_fixture", idempotency_key="jlpt-core-paid-user-credit",
+        )
+        conn.commit()
+        cap = _get(paid_uid, "api_guide_jlpt_exams", {"level": "N5"})
         exams = cap["data"]["exams"]
         assert exams, "N5 exam exists"
-        exam_id = exams[0]["id"]
-        cap = _post(uid, "api_guide_jlpt_exam_start", {"examId": exam_id})
+        paid_exam = next((exam for exam in exams if exam["id"] == "mockv1-n5"), None)
+        assert paid_exam and paid_exam["coinCost"] == 100, paid_exam
+        exam_id = paid_exam["id"]
+        cap = _post(paid_uid, "api_guide_jlpt_exam_start", {"examId": exam_id})
         assert cap["status"] == 200, cap
+        assert cap["data"]["coinCharged"] == 100, cap
+        assert server.get_wallet_snapshot(conn, paid_uid)["balancePoints"] == 9_900
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_ledger_entries WHERE user_id=?", (paid_uid,)
+        ).fetchone()["c"] == 2, "paid user needs one topup and one exam debit"
         sess = cap["data"]
         session_id = sess["sessionId"]
         eqs = sess["questions"]
@@ -277,23 +296,23 @@ def main() -> None:
         for i, q in enumerate(eqs):
             tq = jlpt.get_question(conn, q["id"])
             sel = tq["answer_index"] if i % 2 == 0 else (tq["answer_index"] + 1) % len(json.loads(tq["choices_json"]))
-            cap = _post(uid, "api_guide_jlpt_exam_answer", {
+            cap = _post(paid_uid, "api_guide_jlpt_exam_answer", {
                 "sessionId": session_id, "questionId": q["id"], "selectedIndex": sel,
             })
             assert cap["status"] == 200, cap
-        cap = _post(uid, "api_guide_jlpt_exam_submit", {"sessionId": session_id})
+        cap = _post(paid_uid, "api_guide_jlpt_exam_submit", {"sessionId": session_id})
         assert cap["status"] == 200, cap
         assert cap["data"]["total"] == len(eqs)
         assert 0 <= cap["data"]["score"] <= 100
         # Post-submit breakdown reveals answers.
         assert all("answerIndex" in q for q in cap["data"]["questions"])
         # Double submit → 409.
-        cap = _post(uid, "api_guide_jlpt_exam_submit", {"sessionId": session_id})
+        cap = _post(paid_uid, "api_guide_jlpt_exam_submit", {"sessionId": session_id})
         assert cap["status"] == 409, cap
         # History + session review.
-        cap = _get(uid, "api_guide_jlpt_exam_history", {})
+        cap = _get(paid_uid, "api_guide_jlpt_exam_history", {})
         assert any(s["sessionId"] == session_id for s in cap["data"]["sessions"])
-        h, cap = _handler(uid)
+        h, cap = _handler(paid_uid)
         h.api_guide_jlpt_exam_session(conn, session_id)
         assert cap["status"] == 200 and cap["data"]["sessionId"] == session_id
         assert all("answerIndex" in q for q in cap["data"]["questions"])
@@ -464,7 +483,8 @@ def main() -> None:
             assert q["section"] != "listening" or q["audioMediaId"], "silent listening leaked into placement"
         # Dynamic mock exam sampling excludes silent, keeps audio-backed.
         cap = _post(admin, "api_admin_jlpt_exam_upsert", {"exam": {
-            "id": "dyn-n1", "level": "N1", "title": "N1 动态模考", "questionCount": 30,
+            "id": "dyn-n1", "level": "N1", "section": "listening",
+            "title": "N1 动态听力模考", "questionCount": 30,
         }})
         assert cap["status"] == 200, cap
         conn.commit()
@@ -502,6 +522,10 @@ def main() -> None:
                             selected_index=int(qrows[0]["answer_index"]), now=server.now_iso())
         conn.commit()
         assert jlpt.review_pending_count(conn, user_id=rev_uid) == 5
+        assert server.get_wallet_snapshot(conn, uid)["balancePoints"] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_ledger_entries WHERE user_id=?", (uid,)
+        ).fetchone()["c"] == 0, "free JLPT flows must not create wallet ledger entries"
 
         print("OK")
     finally:

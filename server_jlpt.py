@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -205,6 +206,24 @@ def _clamp(value: Any, default: int, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, n))
+
+
+def _parse_coin_cost(value: Any) -> int:
+    """Parse an explicitly supplied JSON price without coercing bad input.
+
+    JSON booleans are Python ``int`` subclasses, and the standard decoder can
+    accept non-standard NaN/Infinity tokens, so both need explicit rejection.
+    Prices are whole Machi coins; integral finite floats remain valid JSON
+    numbers, while strings and fractional values are not silently truncated.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("coinCost must be a finite whole number between 0 and 100000")
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        raise ValueError("coinCost must be a finite whole number between 0 and 100000")
+    parsed = int(value)
+    if not 0 <= parsed <= 100_000:
+        raise ValueError("coinCost must be a finite whole number between 0 and 100000")
+    return parsed
 
 
 def _loads_choices(raw: Any) -> list[str]:
@@ -1650,7 +1669,11 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     coin_cost_supplied = "coinCost" in exam or "coin_cost" in exam
     if coin_cost_supplied:
         raw_coin_cost = exam["coinCost"] if "coinCost" in exam else exam.get("coin_cost")
-        coin_cost = _clamp(raw_coin_cost, 0, 0, 100_000)
+        # JSON null means "not supplied" for PATCH-like admin upserts. Only an
+        # actual numeric zero is allowed to turn a paid exam into a free exam.
+        coin_cost_supplied = raw_coin_cost is not None
+    if coin_cost_supplied:
+        coin_cost = _parse_coin_cost(raw_coin_cost)
     elif existing:
         coin_cost = int(dict(existing).get("coin_cost") or 0)
     else:

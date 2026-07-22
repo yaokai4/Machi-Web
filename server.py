@@ -18862,7 +18862,10 @@ class Handler(BaseHTTPRequestHandler):
         exam = body.get("exam") if isinstance(body.get("exam"), dict) else body
         if not isinstance(exam, dict):
             return self.send_error_json("exam object required", 400, "invalid_body")
-        result = jlpt.upsert_exam(conn, exam, now=now_iso())
+        try:
+            result = jlpt.upsert_exam(conn, exam, now=now_iso())
+        except ValueError as exc:
+            return self.send_error_json(str(exc), 400, "invalid_body")
         conn.commit()
         self.send_json({"status": "ok", **result})
 
