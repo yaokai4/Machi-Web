@@ -112,6 +112,13 @@ def main() -> None:
         assert conn.execute("SELECT COUNT(*) AS c FROM jlpt_exams").fetchone()["c"] >= 3
 
         uid = _make_user(conn)
+        # The canonical mockv1 exams are paid. This broad JLPT flow test is not
+        # an insufficient-balance test, so fund its fixture explicitly instead
+        # of relying on the historical fresh-DB price bug (all costs were 0).
+        server.wallet_post_ledger(
+            conn, uid, "topup", 10_000,
+            source_type="test_fixture", idempotency_key="jlpt-core-fixture-credit",
+        )
         conn.commit()
 
         # 1) Practice: N5 vocab. Questions hide the answer + explanation.

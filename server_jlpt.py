@@ -27,6 +27,13 @@ _log = logging.getLogger("kaix.error")
 
 LEVELS: tuple[str, ...] = ("N5", "N4", "N3", "N2", "N1")
 SECTIONS: tuple[str, ...] = ("vocab", "grammar", "reading", "listening")
+MOCK_V1_COIN_COSTS: dict[str, int] = {
+    "N5": 100,
+    "N4": 150,
+    "N3": 250,
+    "N2": 350,
+    "N1": 400,
+}
 SECTION_LABELS_ZH = {
     "vocab": "文字·词汇", "grammar": "语法", "reading": "读解", "listening": "听解",
 }
@@ -1635,8 +1642,19 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     # 分科整卷：子科目(kind='section')挂在父卷(kind='paper')下，靠 parent_exam_id
     # 关联、sort_order 排序推进。父卷本身不组卷不计时。
     parent_exam_id = str(exam.get("parentExamId") or exam.get("parent_exam_id") or "").strip()[:64]
-    # 开考消耗的 Machi 币(分科卷记在笔试子科目上,整卷只扣一次)。
-    coin_cost = _clamp(exam.get("coinCost", exam.get("coin_cost")), 0, 0, 100_000)
+    existing = conn.execute(
+        "SELECT id, coin_cost FROM jlpt_exams WHERE id = ?", (exam_id,)
+    ).fetchone()
+    # 开考消耗的 Machi 币(分科卷记在笔试子科目上,整卷只扣一次)。后台 upsert
+    # 允许编辑其它字段而不重报价格，所以字段缺失时保留已有值；显式 0 才改为免费。
+    coin_cost_supplied = "coinCost" in exam or "coin_cost" in exam
+    if coin_cost_supplied:
+        raw_coin_cost = exam["coinCost"] if "coinCost" in exam else exam.get("coin_cost")
+        coin_cost = _clamp(raw_coin_cost, 0, 0, 100_000)
+    elif existing:
+        coin_cost = int(dict(existing).get("coin_cost") or 0)
+    else:
+        coin_cost = 0
 
     raw_qids = exam.get("questionIds") or exam.get("question_ids") or []
     question_ids = [str(q).strip() for q in raw_qids if str(q).strip()] if isinstance(raw_qids, list) else []
@@ -1649,8 +1667,7 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
 
     row = (level, title, kind, section, question_count, duration, pass_score,
            is_member_only, status, sort_order, score_mode, parent_exam_id, coin_cost)
-    exists = conn.execute("SELECT id FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone()
-    if exists:
+    if existing:
         conn.execute(
             "UPDATE jlpt_exams SET level=?, title=?, kind=?, section=?, question_count=?, "
             "duration_seconds=?, pass_score=?, is_member_only=?, status=?, sort_order=?, "

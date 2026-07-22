@@ -264,8 +264,9 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
         q_ids = [str(x) for x in (paper.get("questionIds") or []) if str(x).strip()]
         if not q_ids:
             continue
-        jlpt.upsert_exam(conn, {
-            "id": f"mockv1-{str(level).lower()}",
+        exam_id = f"mockv1-{str(level).lower()}"
+        exam_payload = {
+            "id": exam_id,
             "level": level,
             "title": paper.get("title") or f"JLPT {level} 全真模拟（笔试卷）",
             "kind": "mock",
@@ -276,7 +277,14 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
             "status": "published",
             "sortOrder": i,
             "questionIds": q_ids,
-        }, now=now)
+        }
+        # Migration 120 runs before startup seeds on a fresh database, so its
+        # UPDATE cannot price rows that do not exist yet. New canonical rows
+        # receive an explicit seed price. A fingerprint refresh of an existing
+        # row deliberately omits it so upsert_exam preserves the admin value.
+        if conn.execute("SELECT id FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone() is None:
+            exam_payload["coinCost"] = jlpt.MOCK_V1_COIN_COSTS.get(str(level).upper(), 0)
+        jlpt.upsert_exam(conn, exam_payload, now=now)
         exams += 1
 
     # 样本 8 题小模考退场:全真卷上线后它们只会稀释列表。只认 ensure_jlpt_seed

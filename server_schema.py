@@ -5738,6 +5738,26 @@ MIGRATIONS: list[tuple[int, str, str]] = [
          WHERE kind = 'mock' AND id LIKE 'mockv1-%';
         """,
     ),
+    (
+        121,
+        "PAY-01：修复迁移 120 后 fresh DB 才写入的 mockv1 零价格",
+        # 迁移 120 早于启动 seed：旧库已有 mockv1 行时能正确回填，fresh DB 当时
+        # 尚无行，随后 seed 接受 DEFAULT 0，造成五档全免费。新 fresh DB 由 seed
+        # 显式写价；本迁移只修复历史版本创建的五个规范 id，且不触碰其它免费卷或
+        # 已有非零运营价。SQLite / PostgreSQL 都支持该 CASE + UPDATE。
+        """
+        UPDATE jlpt_exams SET coin_cost = CASE level
+            WHEN 'N5' THEN 100 WHEN 'N4' THEN 150 WHEN 'N3' THEN 250
+            WHEN 'N2' THEN 350 WHEN 'N1' THEN 400 ELSE coin_cost END
+         WHERE coin_cost = 0 AND kind = 'mock' AND (
+               (id = 'mockv1-n5' AND level = 'N5')
+            OR (id = 'mockv1-n4' AND level = 'N4')
+            OR (id = 'mockv1-n3' AND level = 'N3')
+            OR (id = 'mockv1-n2' AND level = 'N2')
+            OR (id = 'mockv1-n1' AND level = 'N1')
+         );
+        """,
+    ),
 ]
 
 
