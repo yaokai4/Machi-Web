@@ -404,6 +404,13 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
             existing = conn.execute(
                 "SELECT id FROM jlpt_exams WHERE id = ?", (payload["id"],)
             ).fetchone()
+            if not existing and payload.get("kind") == "mock":
+                # Legacy bank manifests predate coinCost, but these canonical
+                # mockv1 rows still have approved launch prices. Migration 120
+                # runs before startup seeds, so a fresh DB must price them here.
+                payload["coinCost"] = jlpt.MOCK_V1_COIN_COSTS.get(
+                    str(level).upper(), 0
+                )
             # Fresh canonical rows receive the approved default price. On a
             # fingerprint refresh, preserve an admin's explicit price instead
             # of silently resetting it from the bundled manifest. The parent
