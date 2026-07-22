@@ -5,6 +5,10 @@ import ts from "typescript";
 
 const sourceUrl = new URL("../src/app/guide/jlpt/exam/examContract.ts", import.meta.url);
 const source = await readFile(sourceUrl, "utf8");
+const examPageSource = await readFile(
+  new URL("../src/app/guide/jlpt/exam/page.tsx", import.meta.url),
+  "utf8",
+);
 const compiled = ts.transpileModule(source, {
   compilerOptions: {
     module: ts.ModuleKind.ESNext,
@@ -26,6 +30,11 @@ const {
   retryTransientJlptWrite,
   restoredAnswerState,
 } = await import(contractUrl);
+
+
+test("paid mock-exam metadata never advertises the whole exam surface as free", () => {
+  assert.doesNotMatch(examPageSource, /オンライン模擬試験\s*無料/);
+});
 
 
 test("strict listening policy is fail-closed and allows only its first play", () => {
