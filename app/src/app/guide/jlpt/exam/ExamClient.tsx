@@ -41,6 +41,7 @@ import {
   localizedScoreDivisionLabel,
   localizedScoreReferenceNote,
   newExamStartKey,
+  normalizeListeningPolicy,
   resolvePaperSectionIndex,
   restoreAuthoritativeJlptSession,
   retryTransientJlptWrite,
@@ -1113,6 +1114,12 @@ function ExamRunner({
   const answeredCount = Object.keys(answers).length;
   const lowTime = session.durationSeconds > 0 && remaining <= 60;
   const answersLocked = answerInputLocked({ sealing, deadlineReached });
+  // A live timed exam must remain strict during a mixed-version deployment.
+  // Practice/review cards intentionally keep their separate permissive default.
+  const listeningPolicy = normalizeListeningPolicy(
+    session.listeningPolicy,
+    session.durationSeconds > 0 ? "strict" : "practice",
+  );
 
   return (
     <div>
@@ -1164,7 +1171,7 @@ function ExamRunner({
             selectedIndex={answers[q.id]}
             onSelect={(sel) => pick(q.id, sel)}
             disabled={answersLocked}
-            listeningPolicy={session.listeningPolicy}
+            listeningPolicy={listeningPolicy}
             audioPlaybackKey={`${session.sessionId}:${q.id}`}
           />
         ))}

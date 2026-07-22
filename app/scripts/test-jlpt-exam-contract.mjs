@@ -29,6 +29,9 @@ const {
 
 
 test("strict listening policy is fail-closed and allows only its first play", () => {
+  const missingLivePolicy = normalizeListeningPolicy(undefined, "strict");
+  assert.equal(missingLivePolicy.mode, "strict");
+  assert.equal(missingLivePolicy.allowReplay, false);
   const strict = normalizeListeningPolicy({
     mode: "strict",
     allowPause: true,

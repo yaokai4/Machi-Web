@@ -27,11 +27,14 @@ const STRICT_LISTENING_POLICY: GuideJlptListeningPolicy = {
 
 export function normalizeListeningPolicy(
   raw?: Partial<GuideJlptListeningPolicy> | null,
+  fallbackMode: GuideJlptListeningPolicy["mode"] = "practice",
 ): GuideJlptListeningPolicy {
   // Only server-owned policy modes are accepted.  Returning canonical shapes
   // prevents a partly malformed payload from accidentally enabling one strict
   // control while disabling another.
-  return raw?.mode === "strict"
+  if (raw?.mode === "strict") return { ...STRICT_LISTENING_POLICY };
+  if (raw?.mode === "practice") return { ...PRACTICE_LISTENING_POLICY };
+  return fallbackMode === "strict"
     ? { ...STRICT_LISTENING_POLICY }
     : { ...PRACTICE_LISTENING_POLICY };
 }
