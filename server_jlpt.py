@@ -54,11 +54,10 @@ VOCAB_QUIZ_DEFAULT_COUNT = 10
 VOCAB_QUIZ_MAX_COUNT = 20
 IMPORT_MAX_ROWS = 2000
 EXAM_DYNAMIC_MAX = 60             # cap on dynamically-sampled mock exam size
-# Grace window (seconds) added to a timed exam's deadline before the server stops
-# accepting answer saves, so an answer in-flight at the buzzer isn't lost to
-# network latency. Grading + recorded duration are still clamped to the hard
-# limit in submit_exam_session.
-EXAM_SAVE_GRACE_SEC = 5
+# The authoritative server deadline has zero scoring grace. Network tolerance
+# is provided by idempotent retries made before the boundary, never by accepting
+# an answer after the exam has ended.
+EXAM_SAVE_GRACE_SEC = 0
 _ANSWER_SNAPSHOT_UNSET = object()
 
 # ── JLPT 标准出分（全真模考）─────────────────────────────────────────────────
@@ -88,6 +87,10 @@ _JLPT_SCALED_NOTE = (
     "按 JLPT 官方计分结构折算的笔试参考分（不含聴解）。正式考试的合格判定"
     "以官方成绩为准，此处仅供备考参考。"
 )
+_JLPT_PAPER_SCORE_NOTE = (
+    "按 JLPT 官方得分区分折算的参考分；正式考试采用等化后的尺度分，Machi 的"
+    "线性折算仅供备考复盘，请以官方成绩为准。"
+)
 
 
 def normalize_score_mode(raw: Any) -> str:
@@ -100,8 +103,7 @@ def compute_scaled_result(
 ) -> Optional[dict[str, Any]]:
     """JLPT 缩放分（笔试参考）。answers: question_id → jlpt_exam_answers row
     (dict, 含 is_correct)。返回 None 表示该级别无缩放配置或卷面为空。"""
-    cfg = JLPT_SCALED_CONFIG.get(normalize_level(level, default=""))
-    if not cfg or not q_ids:
+    if not q_ids:
         return None
     placeholders = ",".join("?" * len(q_ids))
     rows = conn.execute(
@@ -109,16 +111,45 @@ def compute_scaled_result(
         tuple(q_ids),
     ).fetchall()
     sec_by_id = {dict(r)["id"]: (dict(r).get("section") or "vocab") for r in rows}
+    return compute_scaled_result_from_questions(
+        level=level,
+        questions=[
+            {
+                "id": qid,
+                "section": sec_by_id.get(qid) or "vocab",
+                "correct": bool(int((answers.get(qid) or {}).get("is_correct") or 0)),
+            }
+            for qid in q_ids
+        ],
+    )
+
+
+def compute_scaled_result_from_questions(
+    *, level: str, questions: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Pure written-score aggregation from immutable question result records."""
+    normalized_level = normalize_level(level, default="")
+    cfg = JLPT_SCALED_CONFIG.get(normalized_level)
+    if not cfg or not questions:
+        return None
+    by_id = {
+        str(question.get("id") or ""): question
+        for question in questions
+        if str(question.get("id") or "")
+    }
     scales: list[dict[str, Any]] = []
     total_scaled = 0
     written_max = 0
     all_min_ok = True
     for key, label, sections, scale_max, scale_min in cfg["scales"]:
-        ids = [qid for qid in q_ids if sec_by_id.get(qid) in sections]
-        raw_max = len(ids)
+        division_questions = [
+            question
+            for question in by_id.values()
+            if str(question.get("section") or "vocab") in sections
+        ]
+        raw_max = len(division_questions)
         raw = sum(
-            1 for qid in ids
-            if int((answers.get(qid) or {}).get("is_correct") or 0) == 1
+            1 for question in division_questions if bool(question.get("correct"))
         )
         # 四舍五入用整数运算实现 ROUND_HALF_UP,不能用内建 round():后者是银行家
         # 舍入(round-half-to-even),恰好落在 .5 的分数一半进一半舍 —— 同一科内
@@ -142,7 +173,7 @@ def compute_scaled_result(
     pass_line = (pass_total * written_max + 179) // 180  # ceil(passTotal*max/180)
     return {
         "mode": "jlpt_scaled",
-        "level": normalize_level(level, default=""),
+        "level": normalized_level,
         "writtenTotal": total_scaled,
         "writtenMax": written_max,
         "passLineWritten": pass_line,
@@ -151,6 +182,59 @@ def compute_scaled_result(
         "officialPassTotal": pass_total,
         "officialTotalMax": 180,
         "note": _JLPT_SCALED_NOTE,
+    }
+
+
+def compute_official_paper_score(
+    *, level: str, questions: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Aggregate exam sections into official score divisions (reference scale).
+
+    Exam-section timing and score divisions are intentionally different for
+    N3-N5. The immutable question ``section`` category is therefore the source
+    of truth, not the number or title of timed child sessions.
+    """
+    written = compute_scaled_result_from_questions(level=level, questions=questions)
+    if not written:
+        return None
+    listening_questions = [
+        question
+        for question in questions
+        if str(question.get("section") or "") == "listening"
+    ]
+    listening_raw_max = len(listening_questions)
+    listening_raw = sum(
+        1 for question in listening_questions if bool(question.get("correct"))
+    )
+    listening_scaled = (
+        (listening_raw * 60 * 2 + listening_raw_max) // (listening_raw_max * 2)
+        if listening_raw_max
+        else 0
+    )
+    listening_division = {
+        "key": "listening",
+        "label": "聴解",
+        "raw": listening_raw,
+        "rawMax": listening_raw_max,
+        "scaled": listening_scaled,
+        "scaledMax": 60,
+        "sectionMin": 19,
+        "passed": bool(listening_raw_max and listening_scaled >= 19),
+    }
+    total = int(written["writtenTotal"]) + listening_scaled
+    pass_line = int(written["officialPassTotal"])
+    divisions = [*written["scales"], listening_division]
+    return {
+        "mode": "jlpt_scaled_reference",
+        "level": written["level"],
+        "total": total,
+        "totalMax": 180,
+        "passLine": pass_line,
+        "passedReference": bool(
+            total >= pass_line and all(bool(item["passed"]) for item in divisions)
+        ),
+        "divisions": divisions,
+        "note": _JLPT_PAPER_SCORE_NOTE,
     }
 
 _VALID_SOURCE_KINDS = ("practice", "placement", "review", "exam", "vocab")
@@ -948,8 +1032,9 @@ def paper_result(
                 row["session_id"] or ""
             )
     out_sections = []
-    combined_scaled = None
-    listening = None
+    result_questions: list[dict[str, Any]] = []
+    listening_correct = 0
+    listening_total = 0
     all_submitted = True
     for sec in sections:
         linked_session_id = session_ids_by_exam.get(str(sec["id"]), "")
@@ -981,7 +1066,15 @@ def paper_result(
             })
             continue
         s = dict(row)
-        scaled = _loads_scaled(s.get("scaled_json"))
+        immutable_result = session_review(conn, session=s)
+        scaled = immutable_result.get("scaled")
+        immutable_questions = immutable_result.get("questions")
+        if isinstance(immutable_questions, list):
+            result_questions.extend(
+                dict(question)
+                for question in immutable_questions
+                if isinstance(question, dict)
+            )
         out_sections.append({
             "examId": sec["id"], "section": sec.get("section") or "",
             "sectionLabel": SECTION_LABELS_ZH.get(sec.get("section") or "", ""),
@@ -992,13 +1085,28 @@ def paper_result(
             "durationSeconds": int(s.get("duration_seconds") or 0),
             "scaled": scaled,
         })
-        if scaled:
-            combined_scaled = scaled  # 笔试段本就产出完整笔试缩放分
         if (sec.get("section") or "") == "listening":
-            listening = {
-                "score": int(s.get("score") or 0), "correct": int(s.get("correct") or 0),
-                "total": int(s.get("total") or 0), "passed": bool(s.get("passed")),
-            }
+            listening_correct += int(s.get("correct") or 0)
+            listening_total += int(s.get("total") or 0)
+    combined_scaled = compute_scaled_result_from_questions(
+        level=paper.get("level") or "", questions=result_questions
+    )
+    listening = None
+    if listening_total:
+        listening_score = int(round(listening_correct / listening_total * 100))
+        listening = {
+            "score": listening_score,
+            "correct": listening_correct,
+            "total": listening_total,
+            "passed": listening_score >= 60,
+        }
+    official_score = (
+        compute_official_paper_score(
+            level=paper.get("level") or "", questions=result_questions
+        )
+        if all_submitted
+        else None
+    )
     return {
         "paperId": paper_id, "level": paper.get("level") or "",
         "title": paper.get("title") or "",
@@ -1006,8 +1114,9 @@ def paper_result(
         "paperAttemptStatus": str((attempt or {}).get("status") or "legacy"),
         "complete": all_submitted,
         "sections": out_sections,
-        "scaled": combined_scaled,      # 笔试参考缩放分(不含聴解)
-        "listening": listening,          # 聴解百分比(单列)
+        "scaled": combined_scaled,      # 跨全部笔试考试段按题目 category 聚合
+        "listening": listening,          # 兼容旧客户端的聴解百分比
+        "officialScore": official_score, # 正确的 3 个得分区分（N4/N5 笔试合并）
     }
 
 
@@ -1223,7 +1332,7 @@ def _exam_session_expired(
     if limit <= 0:
         return False
     elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
-    return elapsed > limit + max(0, grace)
+    return elapsed >= limit + max(0, grace)
 
 
 def _validated_revision_pair(base_revision: Any, revision: Any) -> tuple[int, int]:
@@ -1512,6 +1621,7 @@ def submit_exam_session(
     out = {
         "sessionId": session["id"],
         "answerRevision": result_revision,
+        "idempotentReplay": False,
         "deadlineExpired": deadline_expired,
         "snapshotAccepted": bool(snapshot_requested and not deadline_expired),
         "total": total, "correct": correct, "score": score,
@@ -1522,6 +1632,13 @@ def submit_exam_session(
     }
     if scaled:
         out["scaled"] = scaled
+    snapshotted = conn.execute(
+        "UPDATE jlpt_exam_sessions SET result_snapshot_json=? "
+        "WHERE id=? AND result_snapshot_json=''",
+        (json.dumps(out, ensure_ascii=False, separators=(",", ":")), session["id"]),
+    )
+    if getattr(snapshotted, "rowcount", 0) != 1:
+        raise RuntimeError("failed to persist immutable JLPT result snapshot")
     return out
 
 
@@ -1561,6 +1678,20 @@ def exam_history(conn: Any, *, user_id: str, level: str = "") -> list[dict[str, 
 
 def session_review(conn: Any, *, session: dict[str, Any]) -> dict[str, Any]:
     """Full回看 of a (usually submitted) session with answers revealed."""
+    stored = _loads_result_snapshot(session.get("result_snapshot_json"))
+    if stored:
+        # Return a fresh object from the committed result snapshot. In particular,
+        # do not re-read mutable question/exam catalog rows for completed sessions.
+        # The stable session identity/status fields remain part of the historical
+        # review API contract even though they are not part of the submit payload.
+        stored.pop("idempotentReplay", None)
+        return {
+            "sessionId": session["id"],
+            "examId": session.get("exam_id") or "",
+            "level": session.get("level") or "",
+            "status": session.get("status") or "",
+            **stored,
+        }
     q_ids = _loads_json_list(session.get("question_ids_json"))
     ans_rows = conn.execute(
         "SELECT question_id, selected_index, is_correct FROM jlpt_exam_answers WHERE session_id = ?",
@@ -1601,12 +1732,59 @@ def replay_submitted_exam_result(
     """
     if str(session.get("status") or "") != "submitted":
         return None
+    stored = _loads_result_snapshot(session.get("result_snapshot_json"))
+    if stored:
+        stored["idempotentReplay"] = True
+        return stored
     out = session_review(conn, session=session)
     out.pop("status", None)
     out["passScore"] = int((exam or {}).get("pass_score") or 60)
     out["answerRevision"] = int(session.get("answer_revision") or 0)
     out["idempotentReplay"] = True
     return out
+
+
+def append_exam_result_snapshot_fields(
+    conn: Any, *, session_id: str, fields: dict[str, Any]
+) -> bool:
+    """Append final response fields before the submit transaction commits.
+
+    A paper submit learns its authoritative parent progress only after the
+    session has been graded. The base snapshot is already durable at that
+    point, so this append-only CAS completes the same response snapshot without
+    allowing a later retry to rewrite any existing field.
+    """
+    if not fields:
+        return True
+    row = conn.execute(
+        "SELECT result_snapshot_json FROM jlpt_exam_sessions WHERE id=?",
+        (session_id,),
+    ).fetchone()
+    raw = str(row["result_snapshot_json"] or "") if row else ""
+    stored = _loads_result_snapshot(raw)
+    if not stored:
+        return False
+    changed = False
+    for key, value in fields.items():
+        if key in stored:
+            if stored[key] != value:
+                raise RuntimeError(
+                    f"immutable JLPT result snapshot field already differs: {key}"
+                )
+            continue
+        stored[key] = value
+        changed = True
+    if not changed:
+        return True
+    encoded = json.dumps(stored, ensure_ascii=False, separators=(",", ":"))
+    updated = conn.execute(
+        "UPDATE jlpt_exam_sessions SET result_snapshot_json=? "
+        "WHERE id=? AND result_snapshot_json=?",
+        (encoded, session_id, raw),
+    )
+    if getattr(updated, "rowcount", 0) != 1:
+        raise RuntimeError("JLPT result snapshot changed while finalizing response")
+    return True
 
 
 # ── vocab quiz (考单词在线考试) ──────────────────────────────────────────────
@@ -2094,6 +2272,21 @@ def _loads_scaled(raw: Any) -> Optional[dict[str, Any]]:
         return None
     data = _loads_json_obj(raw)
     return data if isinstance(data, dict) else None
+
+
+def _loads_result_snapshot(raw: Any) -> Optional[dict[str, Any]]:
+    """Strictly decode a committed submit response stored on the session row."""
+    if not raw:
+        return None
+    data = _loads_json_obj(raw)
+    if (
+        not isinstance(data, dict)
+        or not str(data.get("sessionId") or "")
+        or not isinstance(data.get("questions"), list)
+    ):
+        return None
+    # Round-trip through JSON so no caller can mutate a shared decoded object.
+    return json.loads(json.dumps(data, ensure_ascii=False))
 
 
 def _add_seconds_iso(start_iso: str, seconds: int) -> str:

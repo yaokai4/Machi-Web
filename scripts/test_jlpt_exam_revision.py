@@ -227,6 +227,121 @@ class JLPTExamRevisionTests(unittest.TestCase):
         self.assertEqual({self.question_ids[0]: 0}, saved)
         self.assertEqual("submitted", self._session()["status"])
 
+    def test_answer_at_or_after_exact_deadline_has_zero_grace_and_cannot_score(self) -> None:
+        self.conn.execute(
+            "UPDATE jlpt_exams SET duration_seconds=10 WHERE id=?", (self.exam_id,)
+        )
+        self.conn.execute(
+            "UPDATE jlpt_exam_sessions SET started_at=? WHERE id=?",
+            ("2026-01-01T00:00:00+00:00", self.session_id),
+        )
+        self.exam = jlpt.get_exam(self.conn, self.exam_id)
+
+        for now in ("2026-01-01T00:00:10+00:00", "2026-01-01T00:00:11+00:00"):
+            with self.subTest(now=now):
+                rejected = jlpt.save_exam_answer(
+                    self.conn,
+                    session=self._session(),
+                    question_id=self.question_ids[0],
+                    selected_index=int(
+                        jlpt.get_question(self.conn, self.question_ids[0])["answer_index"]
+                    ),
+                    now=now,
+                    base_revision=0,
+                    revision=1,
+                )
+                self.assertIsNone(rejected)
+
+        result = jlpt.submit_exam_session(
+            self.conn,
+            session=self._session(),
+            exam=self.exam,
+            now="2026-01-01T00:00:11+00:00",
+            answer_snapshot=[
+                {
+                    "questionId": self.question_ids[0],
+                    "selectedIndex": int(
+                        jlpt.get_question(self.conn, self.question_ids[0])["answer_index"]
+                    ),
+                }
+            ],
+            base_revision=0,
+            revision=1,
+        )
+        self.assertTrue(result["deadlineExpired"])
+        self.assertFalse(result["snapshotAccepted"])
+        self.assertEqual(0, result["correct"])
+        self.assertEqual(0, result["score"])
+        self.assertEqual([], self.conn.execute(
+            "SELECT * FROM jlpt_exam_answers WHERE session_id=?", (self.session_id,)
+        ).fetchall())
+
+    def test_submit_persists_complete_immutable_result_for_lost_response_replay(self) -> None:
+        self.conn.execute(
+            "UPDATE jlpt_exams SET pass_score=55, score_mode='jlpt_scaled' WHERE id=?",
+            (self.exam_id,),
+        )
+        self.exam = jlpt.get_exam(self.conn, self.exam_id)
+        correct_index = int(
+            jlpt.get_question(self.conn, self.question_ids[0])["answer_index"]
+        )
+        first = jlpt.submit_exam_session(
+            self.conn,
+            session=self._session(),
+            exam=self.exam,
+            now="2026-01-01T00:00:05+00:00",
+            answer_snapshot=[
+                {"questionId": self.question_ids[0], "selectedIndex": correct_index}
+            ],
+            base_revision=0,
+            revision=1,
+        )
+        self.conn.commit()
+        self.assertFalse(first["idempotentReplay"])
+        stored = dict(
+            self.conn.execute(
+                "SELECT result_snapshot_json FROM jlpt_exam_sessions WHERE id=?",
+                (self.session_id,),
+            ).fetchone()
+        )["result_snapshot_json"]
+        self.assertTrue(stored)
+        persisted = json.loads(stored)
+        for key in ("passScore", "scoreMode", "questions", "scaled"):
+            self.assertIn(key, persisted)
+
+        # Catalog/admin edits after commit must never rewrite a completed result.
+        self.conn.execute(
+            "UPDATE jlpt_exams SET pass_score=99, score_mode='percent', title='mutated' WHERE id=?",
+            (self.exam_id,),
+        )
+        self.conn.execute(
+            "UPDATE jlpt_questions SET stem='MUTATED AFTER SUBMIT', passage='changed', "
+            "choices_json='[\"x\",\"y\",\"z\",\"w\"]', answer_index=3, "
+            "explanation='changed' WHERE id=?",
+            (self.question_ids[0],),
+        )
+        self.conn.execute(
+            "DELETE FROM jlpt_exam_questions WHERE exam_id=?", (self.exam_id,)
+        )
+        self.conn.commit()
+
+        replay = jlpt.replay_submitted_exam_result(
+            self.conn,
+            session=self._session(),
+            exam=jlpt.get_exam(self.conn, self.exam_id),
+        )
+        self.assertTrue(replay["idempotentReplay"])
+        first_without_replay = {k: v for k, v in first.items() if k != "idempotentReplay"}
+        replay_without_replay = {k: v for k, v in replay.items() if k != "idempotentReplay"}
+        self.assertEqual(first_without_replay, replay_without_replay)
+        self.assertNotEqual("MUTATED AFTER SUBMIT", replay["questions"][0]["stem"])
+        review = jlpt.session_review(self.conn, session=self._session())
+        self.assertEqual(self.session_id, review["sessionId"])
+        self.assertEqual(self.exam_id, review["examId"])
+        self.assertEqual("N5", review["level"])
+        self.assertEqual("submitted", review["status"])
+        self.assertEqual(first["questions"], review["questions"])
+
     def test_stale_or_invalid_snapshot_rolls_back_without_partial_submit(self) -> None:
         self._answer(self.question_ids[0], 0, 0, 1)
         before = [

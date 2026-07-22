@@ -5887,6 +5887,16 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON jlpt_paper_reconciliation_audit(case_type, created_at);
         """,
     ),
+    (
+        132,
+        "jlpt 交卷不可变结果快照：丢失响应重放与历史回看不再读取可变题库",
+        # 131 由 Apple consumption 购买时样例证据预留。每场新提交把最终
+        # passScore/scoreMode/缩放分及逐题回看内容作为一个 JSON 值与状态在同一
+        # 事务落盘。旧会话保留空串并走兼容回看路径。SQLite/Postgres 通用。
+        """
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN result_snapshot_json TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

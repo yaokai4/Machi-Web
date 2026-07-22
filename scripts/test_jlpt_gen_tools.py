@@ -125,9 +125,9 @@ EXPECTED_PAPER = {
 EXPECTED_SECTION_DURATION = {
     "N1": {"written": 110 * 60, "listening": 55 * 60},
     "N2": {"written": 105 * 60, "listening": 50 * 60},
-    "N3": {"written": 100 * 60, "listening": 40 * 60},
-    "N4": {"written": 80 * 60, "listening": 35 * 60},
-    "N5": {"written": 60 * 60, "listening": 30 * 60},
+    "N3": {"vocabulary": 30 * 60, "grammar_reading": 70 * 60, "listening": 40 * 60},
+    "N4": {"vocabulary": 25 * 60, "grammar_reading": 55 * 60, "listening": 35 * 60},
+    "N5": {"vocabulary": 20 * 60, "grammar_reading": 40 * 60, "listening": 30 * 60},
 }
 
 
@@ -483,7 +483,7 @@ class AssembleBankTests(unittest.TestCase):
                     f"{level} {qtype} must exactly match canonical paper spec",
                 )
 
-    def test_full_paper_manifest_keeps_written_and_listening_timers_separate(self) -> None:
+    def test_full_paper_manifest_uses_the_official_two_or_three_exam_sections(self) -> None:
         pool = _canonical_pool()
         with tempfile.TemporaryDirectory() as tmp:
             source_path = Path(tmp) / "source.json"
@@ -501,7 +501,10 @@ class AssembleBankTests(unittest.TestCase):
             self.assertEqual(2, paper.get("manifestVersion"))
             self.assertNotIn("笔试卷", paper.get("title", ""))
             sections = paper.get("sections") or []
-            self.assertEqual(["written", "listening"], [s.get("section") for s in sections])
+            self.assertEqual(
+                list(EXPECTED_SECTION_DURATION[level]),
+                [s.get("section") for s in sections],
+            )
             self.assertEqual(
                 sum(EXPECTED_SECTION_DURATION[level].values()),
                 paper.get("durationSeconds"),
@@ -514,15 +517,68 @@ class AssembleBankTests(unittest.TestCase):
                 paper["questionIds"],
                 [qid for section in sections for qid in section["questionIds"]],
             )
-            written, listening = sections
-            self.assertTrue(written["questionIds"])
-            self.assertTrue(listening["questionIds"])
-            self.assertTrue(
-                all(by_id[qid]["section"] != "listening" for qid in written["questionIds"])
-            )
-            self.assertTrue(
-                all(by_id[qid]["section"] == "listening" for qid in listening["questionIds"])
-            )
+            for section in sections:
+                self.assertTrue(section["questionIds"])
+                source_sections = {
+                    by_id[qid]["section"] for qid in section["questionIds"]
+                }
+                if section["section"] == "listening":
+                    self.assertEqual({"listening"}, source_sections)
+                elif section["section"] == "vocabulary":
+                    self.assertEqual({"vocab"}, source_sections)
+                elif section["section"] == "grammar_reading":
+                    self.assertTrue(source_sections <= {"grammar", "reading"})
+                    self.assertTrue(source_sections)
+                else:
+                    self.assertEqual("written", section["section"])
+                    self.assertNotIn("listening", source_sections)
+
+    def test_seed_accepts_three_section_n3_manifest_and_only_first_section_charges(self) -> None:
+        payloads = jlpt_seed._mock_paper_exam_payloads(
+            "N3",
+            {
+                "kind": "full-paper",
+                "manifestVersion": 2,
+                "title": "JLPT N3 全真模拟（完整卷）",
+                "durationSeconds": 140 * 60,
+                "questionIds": ["n3-vocab", "n3-grammar", "n3-reading", "n3-listening"],
+                "sections": [
+                    {
+                        "section": "vocabulary",
+                        "title": "言語知識（文字・語彙）",
+                        "durationSeconds": 30 * 60,
+                        "questionIds": ["n3-vocab"],
+                    },
+                    {
+                        "section": "grammar_reading",
+                        "title": "言語知識（文法）・読解",
+                        "durationSeconds": 70 * 60,
+                        "questionIds": ["n3-grammar", "n3-reading"],
+                    },
+                    {
+                        "section": "listening",
+                        "title": "聴解",
+                        "durationSeconds": 40 * 60,
+                        "questionIds": ["n3-listening"],
+                    },
+                ],
+            },
+            sort_order=0,
+        )
+
+        self.assertEqual(4, len(payloads))
+        parent, vocabulary, grammar_reading, listening = payloads
+        self.assertEqual("paper", parent["kind"])
+        self.assertEqual(
+            ["vocab", "", "listening"],
+            [vocabulary["section"], grammar_reading["section"], listening["section"]],
+        )
+        self.assertEqual([250, 0, 0], [
+            vocabulary["coinCost"], grammar_reading["coinCost"], listening["coinCost"]
+        ])
+        self.assertEqual(["percent", "percent", "percent"], [
+            vocabulary["scoreMode"], grammar_reading["scoreMode"], listening["scoreMode"]
+        ])
 
     def test_seed_installs_full_paper_as_parent_and_independently_timed_sections(self) -> None:
         bank = {

@@ -40,13 +40,21 @@ class JLPTPaperAttemptTests(unittest.TestCase):
             "VALUES (?, ?, ?, ?, 'x', ?, ?, ?)",
             (self.user_id, handle, handle, f"{handle}@example.com", now, now, now),
         )
-        question_ids = [
+        written_question_ids = [
             dict(row)["id"]
             for row in self.conn.execute(
-                "SELECT id FROM jlpt_questions WHERE level='N5' AND status='published' "
-                "AND review_status='approved' ORDER BY id LIMIT 3"
+                "SELECT id FROM jlpt_questions WHERE level='N1' AND section<>'listening' "
+                "AND status='published' AND review_status='approved' ORDER BY id LIMIT 2"
             ).fetchall()
         ]
+        listening_question_ids = [
+            dict(row)["id"]
+            for row in self.conn.execute(
+                "SELECT id FROM jlpt_questions WHERE level='N1' AND section='listening' "
+                "AND status='published' AND review_status='approved' ORDER BY id LIMIT 1"
+            ).fetchall()
+        ]
+        question_ids = written_question_ids + listening_question_ids
         self.assertEqual(3, len(question_ids))
         suffix = uuid.uuid4().hex[:10]
         self.paper_id = "paper-" + suffix
@@ -56,8 +64,8 @@ class JLPTPaperAttemptTests(unittest.TestCase):
             self.conn,
             {
                 "id": self.paper_id,
-                "level": "N5",
-                "title": "N5 complete paper",
+                "level": "N1",
+                "title": "N1 complete paper",
                 "kind": "paper",
                 "questionCount": 3,
                 "coinCost": 0,
@@ -69,7 +77,7 @@ class JLPTPaperAttemptTests(unittest.TestCase):
             self.conn,
             {
                 "id": self.written_id,
-                "level": "N5",
+                "level": "N1",
                 "title": "Written",
                 "kind": "section",
                 "durationSeconds": 3600,
@@ -85,7 +93,7 @@ class JLPTPaperAttemptTests(unittest.TestCase):
             self.conn,
             {
                 "id": self.listening_id,
-                "level": "N5",
+                "level": "N1",
                 "title": "Listening",
                 "kind": "section",
                 "section": "listening",
@@ -151,6 +159,22 @@ class JLPTPaperAttemptTests(unittest.TestCase):
         )
         self.conn.commit()
         return result, progress
+
+    def _http_submit(self, session_id: str) -> dict:
+        handler = server.Handler.__new__(server.Handler)
+        captured: dict = {}
+        handler.send_json = (  # type: ignore[method-assign]
+            lambda data, status=200: captured.update(data=data, status=status)
+        )
+        handler.current_session = (  # type: ignore[method-assign]
+            lambda _conn: {"user_id": self.user_id}
+        )
+        handler.read_json = lambda: {"sessionId": session_id}  # type: ignore[method-assign]
+        handler.headers = {}
+        handler.client_address = ("127.0.0.1", 0)
+        handler.api_guide_jlpt_exam_submit(self.conn)
+        self.assertEqual(200, captured["status"], captured)
+        return captured["data"]
 
     def test_first_section_creates_paid_parent_attempt_and_links_session(self) -> None:
         self._credit()
@@ -348,6 +372,179 @@ class JLPTPaperAttemptTests(unittest.TestCase):
         self.assertEqual(retry_attempt_id, retry_result["paperAttemptId"])
         self.assertFalse(retry_result["complete"])
         self.assertEqual([True, False], [s["done"] for s in retry_result["sections"]])
+
+    def test_lost_section_submit_response_replays_its_original_parent_progress(self) -> None:
+        """Later sections must not rewrite the first submit's replay payload."""
+        self._credit()
+        first_section = self._start(self.paper_id, "immutable-submit-1")["exam"]
+        first_response = self._http_submit(first_section["sessionId"])
+        self.assertEqual(1, first_response["paperAttempt"]["currentSectionIndex"])
+
+        second_section = self._start(self.paper_id, "immutable-submit-2")["exam"]
+        self._http_submit(second_section["sessionId"])
+
+        replay = self._http_submit(first_section["sessionId"])
+        self.assertTrue(replay["idempotentReplay"])
+        self.assertEqual(
+            {key: value for key, value in first_response.items() if key != "idempotentReplay"},
+            {key: value for key, value in replay.items() if key != "idempotentReplay"},
+        )
+
+    def test_n3_three_exam_sections_resume_in_order_and_aggregate_score_divisions(self) -> None:
+        """N3 has three timed exam sections but still three score divisions."""
+        now = server.now_iso()
+        by_section = {}
+        for section in ("vocab", "grammar", "reading", "listening"):
+            row = self.conn.execute(
+                "SELECT id FROM jlpt_questions WHERE level='N3' AND section=? "
+                "AND status='published' AND review_status='approved' ORDER BY id LIMIT 1",
+                (section,),
+            ).fetchone()
+            self.assertIsNotNone(row, section)
+            by_section[section] = row["id"]
+
+        suffix = uuid.uuid4().hex[:10]
+        paper_id = "n3-paper-" + suffix
+        section_specs = [
+            ("n3-vocab-" + suffix, "言語知識（文字・語彙）", "vocab", [by_section["vocab"]], 250),
+            (
+                "n3-grammar-reading-" + suffix,
+                "言語知識（文法）・読解",
+                "",
+                [by_section["grammar"], by_section["reading"]],
+                0,
+            ),
+            ("n3-listening-" + suffix, "聴解", "listening", [by_section["listening"]], 0),
+        ]
+        jlpt.upsert_exam(
+            self.conn,
+            {
+                "id": paper_id,
+                "level": "N3",
+                "title": "N3 official section contract",
+                "kind": "paper",
+                "questionCount": 4,
+                "status": "published",
+            },
+            now=now,
+        )
+        for order, (exam_id, title, section, question_ids, coin_cost) in enumerate(section_specs):
+            jlpt.upsert_exam(
+                self.conn,
+                {
+                    "id": exam_id,
+                    "level": "N3",
+                    "title": title,
+                    "kind": "section",
+                    "section": section,
+                    "durationSeconds": (30, 70, 40)[order] * 60,
+                    "scoreMode": "percent",
+                    "coinCost": coin_cost,
+                    "parentExamId": paper_id,
+                    "sortOrder": order,
+                    "questionIds": question_ids,
+                    "status": "published",
+                },
+                now=now,
+            )
+        self.conn.commit()
+        self._credit()
+
+        session_ids = []
+        attempt_id = ""
+        for index, (exam_id, _title, _section, question_ids, _coin_cost) in enumerate(section_specs):
+            key = f"n3-section-{index}"
+            outcome = self._start(
+                paper_id,
+                key,
+                confirmed_charge_coins=250 if index == 0 else 0,
+            )
+            self.assertEqual("started", outcome["status"])
+            started = outcome["exam"]
+            attempt_id = attempt_id or started["paperAttempt"]["id"]
+            self.assertEqual(attempt_id, started["paperAttempt"]["id"])
+            self.assertEqual(index, started["paperAttempt"]["currentSectionIndex"])
+            self.assertEqual(3, started["paperAttempt"]["sectionCount"])
+
+            replay = self._start(
+                paper_id,
+                key,
+                confirmed_charge_coins=250 if index == 0 else 0,
+            )["exam"]
+            self.assertTrue(replay["resumed"])
+            self.assertEqual(started["sessionId"], replay["sessionId"])
+
+            session_ids.append(started["sessionId"])
+            session = jlpt.get_session(
+                self.conn, session_id=started["sessionId"], user_id=self.user_id
+            )
+            exam = jlpt.get_exam(self.conn, exam_id)
+            snapshot = [
+                {
+                    "questionId": question_id,
+                    "selectedIndex": int(
+                        jlpt.get_question(self.conn, question_id)["answer_index"]
+                    ),
+                }
+                for question_id in question_ids
+            ]
+            result = jlpt.submit_exam_session(
+                self.conn,
+                session=session,
+                exam=exam,
+                now=server.now_iso(),
+                answer_snapshot=snapshot,
+                base_revision=0,
+                revision=1,
+            )
+            self.assertIsNotNone(result)
+            progress = server.sync_jlpt_paper_attempt_after_submit(
+                self.conn,
+                session_id=started["sessionId"],
+                user_id=self.user_id,
+                now=server.now_iso(),
+            )
+            self.conn.commit()
+            self.assertEqual("completed" if index == 2 else "in_progress", progress["status"])
+
+        aggregate = jlpt.paper_result(
+            self.conn,
+            user_id=self.user_id,
+            paper_id=paper_id,
+            paper_attempt_id=attempt_id,
+        )
+        self.assertTrue(aggregate["complete"])
+        self.assertEqual(session_ids, [section["sessionId"] for section in aggregate["sections"]])
+        self.assertEqual(
+            [("language", 60), ("reading", 60)],
+            [(scale["key"], scale["scaled"]) for scale in aggregate["scaled"]["scales"]],
+        )
+        official = aggregate["officialScore"]
+        self.assertEqual(
+            [("language", 60), ("reading", 60), ("listening", 60)],
+            [(division["key"], division["scaled"]) for division in official["divisions"]],
+        )
+        self.assertEqual(180, official["total"])
+        self.assertEqual(180, official["totalMax"])
+        self.assertTrue(official["passedReference"])
+
+    def test_n5_three_timed_sections_map_to_two_score_divisions(self) -> None:
+        score = jlpt.compute_official_paper_score(
+            level="N5",
+            questions=[
+                {"id": "v", "section": "vocab", "correct": True},
+                {"id": "g", "section": "grammar", "correct": True},
+                {"id": "r", "section": "reading", "correct": True},
+                {"id": "l", "section": "listening", "correct": True},
+            ],
+        )
+        self.assertIsNotNone(score)
+        self.assertEqual(
+            [("language_reading", 120), ("listening", 60)],
+            [(division["key"], division["scaled"]) for division in score["divisions"]],
+        )
+        self.assertEqual(180, score["total"])
+        self.assertTrue(score["passedReference"])
 
     def test_failure_after_debit_rolls_back_parent_session_ledger_and_balance(self) -> None:
         self._credit()

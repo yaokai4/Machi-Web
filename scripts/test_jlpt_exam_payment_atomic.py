@@ -102,7 +102,13 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
             confirmed_charge_coins=confirmed_charge_coins,
         )
 
-    def _handler_start(self, *, key: str = "") -> dict:
+    def _handler_start(
+        self,
+        *,
+        key: object = "http-start",
+        confirmed_charge_coins: object = 100,
+        include_confirmed: bool = True,
+    ) -> dict:
         handler = server.Handler.__new__(server.Handler)
         captured: dict = {}
         handler.send_json = (  # type: ignore[method-assign]
@@ -111,8 +117,11 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
         handler.current_session = (  # type: ignore[method-assign]
             lambda _conn: {"user_id": self.user_id}
         )
-        handler.read_json = lambda: {"examId": self.exam_id}  # type: ignore[method-assign]
-        handler.headers = {"Idempotency-Key": key} if key else {}
+        body = {"examId": self.exam_id}
+        if include_confirmed:
+            body["confirmedChargeCoins"] = confirmed_charge_coins
+        handler.read_json = lambda: body  # type: ignore[method-assign]
+        handler.headers = {"Idempotency-Key": key} if key is not None else {}
         handler.client_address = ("127.0.0.1", 0)
         handler.api_guide_jlpt_exam_start(self.conn)
         return captured
@@ -166,6 +175,45 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
         )
         self.assertNotEqual("http-start", session["start_request_key"])
         self.assertEqual(64, len(session["start_request_key"]))
+
+    def test_http_start_rejects_missing_or_invalid_confirmation_contract_before_debit(self) -> None:
+        """The public paid-start boundary is fail-closed before any mutation."""
+        self._credit()
+        cases = [
+            ({"key": None}, "missing_idempotency_key"),
+            ({"key": "   "}, "invalid_idempotency_key"),
+            ({"key": "x" * 201}, "invalid_idempotency_key"),
+            ({"key": 123}, "invalid_idempotency_key"),
+            ({"key": "missing-confirmed", "include_confirmed": False}, "missing_confirmed_charge"),
+            ({"key": "bool-confirmed", "confirmed_charge_coins": True}, "invalid_confirmed_charge"),
+            ({"key": "text-confirmed", "confirmed_charge_coins": "100"}, "invalid_confirmed_charge"),
+            ({"key": "negative-confirmed", "confirmed_charge_coins": -1}, "invalid_confirmed_charge"),
+        ]
+        for kwargs, expected_code in cases:
+            with self.subTest(expected_code=expected_code, kwargs=kwargs):
+                response = self._handler_start(**kwargs)
+                self.assertEqual(400, response["status"], response)
+                self.assertEqual(expected_code, response["data"]["code"], response)
+
+        self.assertEqual(
+            1_000,
+            server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"],
+        )
+        self.assertEqual(
+            0,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM jlpt_exam_sessions WHERE user_id=?",
+                (self.user_id,),
+            ).fetchone()["c"],
+        )
+        self.assertEqual(
+            0,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM wallet_ledger_entries "
+                "WHERE user_id=? AND source_type='jlpt_exam'",
+                (self.user_id,),
+            ).fetchone()["c"],
+        )
 
     def test_same_or_different_retry_resumes_one_session_without_double_debit(self) -> None:
         self._credit()

@@ -813,15 +813,40 @@ function PaperResult({
   if (q.isLoading) return <InlineLoading />;
   if (q.isError || !q.data) return <ErrorState />;
   const r = q.data;
+  const paperPassed = r.officialScore?.passedReference ?? r.scaled?.passedWrittenReference ?? false;
   return (
     <div>
       <JlptPageHeader
         eyebrow={`JLPT · ${r.level} · ${t("成绩", "結果", "Result")}`}
-        title={r.scaled?.passedWrittenReference ? t("达到笔试参考线!", "筆記参考ライン到達!", "Reached the written reference line!") : t("再接再厉", "次回に向けて", "Keep going")}
+        title={paperPassed ? t("达到整卷参考线!", "総合参考ライン到達!", "Reached the full-paper reference line!") : t("再接再厉", "次回に向けて", "Keep going")}
       />
       <div className="mt-6 space-y-4">
-        {r.scaled ? <ScaledScorePanel t={t} scaled={r.scaled} /> : null}
-        {r.listening ? (
+        {r.officialScore ? (
+          <section
+            aria-label={t("整卷参考成绩", "総合参考スコア", "Full-paper reference score")}
+            className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]"
+          >
+            <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
+              {t("整卷参考分", "総合参考スコア", "Full-paper reference score")}
+            </p>
+            <p className="mt-2 text-3xl font-black text-[rgb(var(--kx-living-ink))]">
+              {r.officialScore.total}<span className="text-base text-[rgb(var(--kx-living-muted))]"> / {r.officialScore.totalMax}</span>
+            </p>
+            <p className="mt-1 text-xs font-semibold text-[rgb(var(--kx-living-muted))]">
+              {t(`参考总分线 ${r.officialScore.passLine}，且各得分区分均须达基准`, `参考総合ライン ${r.officialScore.passLine}、各得点区分の基準も必要`, `Reference total ${r.officialScore.passLine}, with every score division above its minimum`)}
+            </p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              {r.officialScore.divisions.map((division) => (
+                <div key={division.key} className="rounded-2xl bg-[rgb(var(--kx-living-canvas))] px-3 py-3">
+                  <p className="text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">{division.label}</p>
+                  <p className="mt-1 text-sm font-black text-[rgb(var(--kx-living-ink))]">{division.scaled} / {division.scaledMax}</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-[11px] leading-5 text-[rgb(var(--kx-living-muted))]">{r.officialScore.note}</p>
+          </section>
+        ) : r.scaled ? <ScaledScorePanel t={t} scaled={r.scaled} /> : null}
+        {!r.officialScore && r.listening ? (
           <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
             <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
               {t("聴解（参考）", "聴解（参考）", "Listening (reference)")}

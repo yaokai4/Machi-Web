@@ -203,9 +203,10 @@ def _mock_paper_exam_payloads(
 ) -> list[dict[str, Any]]:
     """Translate one bank manifest into runtime exam rows.
 
-    Legacy manifests remain one fixed ``mock`` exam.  A v2 ``full-paper``
-    manifest becomes an untimed parent plus independently timed written and
-    listening children, matching the runtime's paper/section contract.
+    Legacy manifests remain one fixed ``mock`` exam. A v2 ``full-paper``
+    manifest becomes an untimed parent plus the official independently timed
+    exam sections: N1/N2 have written + listening; N3/N4/N5 have vocabulary +
+    grammar/reading + listening. Score divisions are aggregated separately.
     """
     normalized_level = str(level).strip().upper()
     parent_id = f"mockv1-{normalized_level.lower()}"
@@ -250,10 +251,16 @@ def _mock_paper_exam_payloads(
     if paper.get("manifestVersion") != 2:
         raise ValueError(f"{normalized_level}: full-paper requires manifestVersion=2")
     raw_sections = paper.get("sections")
-    if not isinstance(raw_sections, list) or len(raw_sections) != 2:
-        raise ValueError(f"{normalized_level}: full-paper requires written and listening sections")
-
-    expected_names = ("written", "listening")
+    expected_names = (
+        ("written", "listening")
+        if normalized_level in ("N1", "N2")
+        else ("vocabulary", "grammar_reading", "listening")
+    )
+    if not isinstance(raw_sections, list) or len(raw_sections) != len(expected_names):
+        raise ValueError(
+            f"{normalized_level}: full-paper requires sections "
+            + ", ".join(expected_names)
+        )
     normalized_sections = []
     for index, expected_name in enumerate(expected_names):
         raw_section = raw_sections[index]
@@ -280,7 +287,7 @@ def _mock_paper_exam_payloads(
     ]
     if flattened_ids != question_ids:
         raise ValueError(
-            f"{normalized_level}: full-paper questionIds must equal written + listening order"
+            f"{normalized_level}: full-paper questionIds must equal section order"
         )
     if len(set(flattened_ids)) != len(flattened_ids):
         raise ValueError(f"{normalized_level}: full-paper questionIds must be unique")
@@ -308,12 +315,24 @@ def _mock_paper_exam_payloads(
             "questionIds": [],
         }
     ]
+    fallback_titles = {
+        "written": "言語知識・読解",
+        "vocabulary": "言語知識（文字・語彙）",
+        "grammar_reading": "言語知識（文法）・読解",
+        "listening": "聴解",
+    }
+    runtime_sections = {
+        "written": "",
+        "vocabulary": "vocab",
+        "grammar_reading": "",
+        "listening": "listening",
+    }
     for section_order, (section_name, raw_section, section_ids, duration) in enumerate(
         normalized_sections
     ):
         section_title = str(
             raw_section.get("title")
-            or ("言語知識・読解" if section_name == "written" else "聴解")
+            or fallback_titles[section_name]
         )
         payloads.append(
             {
@@ -321,11 +340,15 @@ def _mock_paper_exam_payloads(
                 "level": normalized_level,
                 "title": f"{title} · {section_title}",
                 "kind": "section",
-                "section": "" if section_name == "written" else "listening",
+                "section": runtime_sections[section_name],
                 "durationSeconds": duration,
                 "passScore": 60,
-                "scoreMode": "jlpt_scaled" if section_name == "written" else "percent",
-                "coinCost": coin_cost if section_name == "written" else 0,
+                "scoreMode": (
+                    "jlpt_scaled"
+                    if section_name == "written" and normalized_level in ("N1", "N2")
+                    else "percent"
+                ),
+                "coinCost": coin_cost if section_order == 0 else 0,
                 "isMemberOnly": False,
                 "status": "published",
                 "sortOrder": section_order,

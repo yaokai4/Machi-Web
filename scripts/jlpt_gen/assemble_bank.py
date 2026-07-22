@@ -50,9 +50,9 @@ PAPER = {
     },
 }
 SECTION_DURATION = {
-    "N5": {"written": 60 * 60, "listening": 30 * 60},
-    "N4": {"written": 80 * 60, "listening": 35 * 60},
-    "N3": {"written": 100 * 60, "listening": 40 * 60},
+    "N5": {"vocabulary": 20 * 60, "grammar_reading": 40 * 60, "listening": 30 * 60},
+    "N4": {"vocabulary": 25 * 60, "grammar_reading": 55 * 60, "listening": 35 * 60},
+    "N3": {"vocabulary": 30 * 60, "grammar_reading": 70 * 60, "listening": 40 * 60},
     "N2": {"written": 105 * 60, "listening": 50 * 60},
     "N1": {"written": 110 * 60, "listening": 55 * 60},
 }
@@ -69,6 +69,13 @@ QTYPE_ORDER = ["kanji_reading", "orthography", "context", "paraphrase", "usage",
 GROUPED = {"text_grammar", "reading_mid", "reading_long", "reading_info", "reading_short"}
 LISTENING_QTYPES = {
     "listen_task", "listen_point", "listen_gist", "listen_response", "listen_integrated"
+}
+VOCABULARY_QTYPES = {"kanji_reading", "orthography", "context", "paraphrase", "usage"}
+SECTION_TITLES = {
+    "written": "言語知識・読解",
+    "vocabulary": "言語知識（文字・語彙）",
+    "grammar_reading": "言語知識（文法）・読解",
+    "listening": "聴解",
 }
 GROUP_MIN_MEMBERS = {
     "text_grammar": 2,
@@ -572,7 +579,7 @@ def main(src, out):
     composition_rows = []
     for lvl, spec in PAPER.items():
         ids = []
-        section_question_ids = {"written": [], "listening": []}
+        section_question_ids = {name: [] for name in SECTION_DURATION[lvl]}
         for qt in QTYPE_ORDER:
             want = spec.get(qt) or 0
             if want <= 0:
@@ -645,7 +652,14 @@ def main(src, out):
                     picked = ranked[:want]
             picked_ids = [it["id"] for it in picked]
             ids.extend(picked_ids)
-            section_name = "listening" if qt in LISTENING_QTYPES else "written"
+            if qt in LISTENING_QTYPES:
+                section_name = "listening"
+            elif lvl in ("N3", "N4", "N5") and qt in VOCABULARY_QTYPES:
+                section_name = "vocabulary"
+            elif lvl in ("N3", "N4", "N5"):
+                section_name = "grammar_reading"
+            else:
+                section_name = "written"
             section_question_ids[section_name].extend(picked_ids)
             composition_rows.append(
                 {
@@ -664,17 +678,12 @@ def main(src, out):
             "questionIds": ids,
             "sections": [
                 {
-                    "section": "written",
-                    "title": "言語知識・読解",
-                    "durationSeconds": SECTION_DURATION[lvl]["written"],
-                    "questionIds": section_question_ids["written"],
-                },
-                {
-                    "section": "listening",
-                    "title": "聴解",
-                    "durationSeconds": SECTION_DURATION[lvl]["listening"],
-                    "questionIds": section_question_ids["listening"],
-                },
+                    "section": section_name,
+                    "title": SECTION_TITLES[section_name],
+                    "durationSeconds": duration_seconds,
+                    "questionIds": section_question_ids[section_name],
+                }
+                for section_name, duration_seconds in SECTION_DURATION[lvl].items()
             ],
         }
 

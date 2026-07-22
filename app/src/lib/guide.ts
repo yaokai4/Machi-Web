@@ -1595,7 +1595,7 @@ export interface GuideJlptExamPreflight {
   serverTime: string;
   disclaimer: string;
 }
-/** 分科整卷合并成绩：笔试缩放分 + 聴解百分比。 */
+/** 分科整卷合并成绩：考试段与得分区分分别建模。 */
 export interface GuideJlptPaperResult {
   status: string;
   paperId: string;
@@ -1620,7 +1620,18 @@ export interface GuideJlptPaperResult {
   }[];
   scaled?: GuideJlptScaledResult | null;
   listening?: { score: number; correct: number; total: number; passed: boolean } | null;
+  officialScore?: GuideJlptOfficialPaperScore | null;
   disclaimer: string;
+}
+export interface GuideJlptOfficialPaperScore {
+  mode: string;
+  level: string;
+  total: number;
+  totalMax: 180;
+  passLine: number;
+  passedReference: boolean;
+  divisions: GuideJlptScaledScale[];
+  note: string;
 }
 /** JLPT 缩放分的单科条目（言語知識/読解，或 N4·N5 的合并科）。 */
 export interface GuideJlptScaledScale {
@@ -2012,19 +2023,17 @@ export const guide = {
     greq<GuideJlptExamPreflight>("GET", `/api/guide/jlpt/exam/preflight${qs({ examId })}`),
   jlptExamStart: (
     examId: string,
-    options: { confirmedChargeCoins?: number; requestKey?: string } = {},
+    options: { confirmedChargeCoins: number; requestKey: string },
   ) =>
     greq<GuideJlptExamStart>(
       "POST",
       "/api/guide/jlpt/exam/start",
       {
         examId,
-        ...(options.confirmedChargeCoins === undefined
-          ? {}
-          : { confirmedChargeCoins: options.confirmedChargeCoins }),
+        confirmedChargeCoins: options.confirmedChargeCoins,
       },
       GUIDE_TIMEOUT_MS,
-      options.requestKey ? { "Idempotency-Key": options.requestKey } : {},
+      { "Idempotency-Key": options.requestKey },
     ),
   jlptExamAnswer: (body: {
     sessionId: string;

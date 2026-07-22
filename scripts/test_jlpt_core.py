@@ -87,6 +87,16 @@ def _get(uid, method_name, query=None):
 
 def _post(uid, method_name, body):
     h, cap = _handler(uid)
+    if method_name == "api_guide_jlpt_exam_start":
+        exam_id = str(body.get("examId") or body.get("exam_id") or "")
+        preflight = server.jlpt_exam_access_preflight(
+            _CONN, user_id=uid, exam_id=exam_id, now=server.now_iso()
+        )
+        body = {
+            **body,
+            "confirmedChargeCoins": int(preflight.get("requiredCoins") or 0),
+        }
+        h.headers = {"Idempotency-Key": "core-start-" + uuid.uuid4().hex}
     h.read_json = lambda: body  # type: ignore[method-assign]
     getattr(h, method_name)(_CONN)
     return cap
@@ -306,9 +316,17 @@ def main() -> None:
         assert 0 <= cap["data"]["score"] <= 100
         # Post-submit breakdown reveals answers.
         assert all("answerIndex" in q for q in cap["data"]["questions"])
-        # Double submit → 409.
+        first_submit = cap["data"]
+        # A lost successful response is replayed from the immutable snapshot.
         cap = _post(paid_uid, "api_guide_jlpt_exam_submit", {"sessionId": session_id})
-        assert cap["status"] == 409, cap
+        assert cap["status"] == 200 and cap["data"]["idempotentReplay"] is True, cap
+        assert {
+            key: value for key, value in cap["data"].items()
+            if key not in ("idempotentReplay", "disclaimer")
+        } == {
+            key: value for key, value in first_submit.items()
+            if key not in ("idempotentReplay", "disclaimer")
+        }
         # History + session review.
         cap = _get(paid_uid, "api_guide_jlpt_exam_history", {})
         assert any(s["sessionId"] == session_id for s in cap["data"]["sessions"])

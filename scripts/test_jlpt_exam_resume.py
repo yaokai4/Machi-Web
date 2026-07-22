@@ -68,6 +68,16 @@ def _handler(uid):
 
 def _post(uid, method_name, body):
     h, cap = _handler(uid)
+    if method_name == "api_guide_jlpt_exam_start":
+        exam_id = str(body.get("examId") or body.get("exam_id") or "")
+        preflight = server.jlpt_exam_access_preflight(
+            _CONN, user_id=uid, exam_id=exam_id, now=server.now_iso()
+        )
+        body = {
+            **body,
+            "confirmedChargeCoins": int(preflight.get("requiredCoins") or 0),
+        }
+        h.headers = {"Idempotency-Key": "resume-start-" + uuid.uuid4().hex}
     h.read_json = lambda: body  # type: ignore[method-assign]
     getattr(h, method_name)(_CONN)
     return cap
@@ -218,10 +228,18 @@ def main() -> None:
         assert cap["status"] == 200, cap
         replay = cap["data"]
         assert replay["idempotentReplay"] is True, replay
-        assert replay["sessionId"] == first_submit["sessionId"]
-        assert replay["score"] == first_submit["score"]
-        assert replay["questions"] == first_submit["questions"]
-        assert replay["answerRevision"] == first_submit["answerRevision"]
+        first_without_replay = {
+            key: value for key, value in first_submit.items()
+            if key != "idempotentReplay"
+        }
+        replay_without_replay = {
+            key: value for key, value in replay.items()
+            if key != "idempotentReplay"
+        }
+        assert replay_without_replay == first_without_replay, (
+            first_without_replay,
+            replay_without_replay,
+        )
         conn.commit()
         cap = _post(uid, "api_guide_jlpt_exam_start", {"examId": "resume-exam-1"})
         assert cap["status"] == 200 and cap["data"]["resumed"] is False

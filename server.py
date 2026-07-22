@@ -18484,7 +18484,10 @@ class Handler(BaseHTTPRequestHandler):
         return f"{self._idempotency_caller_tag()}\x1f{method} {path}"
 
     def _idempotency_key(self) -> str:
-        key = (self.headers.get("Idempotency-Key") or "").strip()
+        raw = self.headers.get("Idempotency-Key")
+        if not isinstance(raw, str):
+            return ""
+        key = raw.strip()
         return key[:200] if key else ""
 
     def _idempotency_lock_id(self, method: str, path: str) -> int | None:
@@ -19886,13 +19889,38 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         body = self.read_json()
         exam_id = str(body.get("examId") or body.get("exam_id") or "").strip()
+        raw_request_key = self.headers.get("Idempotency-Key")
+        if raw_request_key is None or raw_request_key == "":
+            return self.send_error_json(
+                "Idempotency-Key required",
+                400,
+                "missing_idempotency_key",
+            )
+        if (
+            not isinstance(raw_request_key, str)
+            or not raw_request_key.strip()
+            or len(raw_request_key.strip()) > 200
+            or any(ord(char) < 0x20 or ord(char) == 0x7F for char in raw_request_key)
+        ):
+            return self.send_error_json(
+                "Idempotency-Key 必须是 1 至 200 个可打印字符。",
+                400,
+                "invalid_idempotency_key",
+            )
+        request_key = raw_request_key.strip()
         confirmed_present = (
             "confirmedChargeCoins" in body or "confirmed_charge_coins" in body
         )
+        if not confirmed_present:
+            return self.send_error_json(
+                "confirmedChargeCoins required",
+                400,
+                "missing_confirmed_charge",
+            )
         confirmed_raw = body.get(
             "confirmedChargeCoins", body.get("confirmed_charge_coins")
         )
-        if confirmed_present and (
+        if (
             isinstance(confirmed_raw, bool)
             or not isinstance(confirmed_raw, int)
             or confirmed_raw < 0
@@ -19909,9 +19937,9 @@ class Handler(BaseHTTPRequestHandler):
             conn,
             user_id=user["id"],
             exam=exam,
-            request_key=self._idempotency_key(),
+            request_key=request_key,
             now=now_iso(),
-            confirmed_charge_coins=(int(confirmed_raw) if confirmed_present else None),
+            confirmed_charge_coins=int(confirmed_raw),
         )
         if outcome.get("status") == "not_found":
             return self.send_error_json("exam not found", 404, "not_found")
@@ -20085,7 +20113,25 @@ class Handler(BaseHTTPRequestHandler):
                 now=now_iso(),
             )
             if paper_progress:
-                result["paperAttempt"] = paper_progress
+                if not result.get("idempotentReplay"):
+                    result["paperAttempt"] = paper_progress
+                    if not jlpt.append_exam_result_snapshot_fields(
+                        conn,
+                        session_id=session_id,
+                        fields={"paperAttempt": paper_progress},
+                    ):
+                        raise RuntimeError(
+                            "failed to finalize immutable JLPT paper result snapshot"
+                        )
+                elif "paperAttempt" not in result:
+                    # Compatibility for an auto-settled or pre-snapshot section:
+                    # the first recoverable response becomes its stable replay.
+                    result["paperAttempt"] = paper_progress
+                    jlpt.append_exam_result_snapshot_fields(
+                        conn,
+                        session_id=session_id,
+                        fields={"paperAttempt": paper_progress},
+                    )
             conn.commit()
         except Exception:
             conn.rollback()
