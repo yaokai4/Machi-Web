@@ -61,6 +61,7 @@ def _call_verify(conn, user: dict, *, txn_id: str, environment: str, app_account
         "originalTransactionId": "orig-" + txn_id,
         "productId": APPLE_PRODUCT_ID,
         "environment": environment,
+        "bundleId": server.APPLE_IAP_BUNDLE_ID or "com.yaokai.kaizi",
     }
     if app_account_token is not None:
         payload["appAccountToken"] = app_account_token

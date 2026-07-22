@@ -308,6 +308,78 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL
 );
 
+-- Privacy consent is an audit event, never a mutable settings boolean.  The
+-- current decision is the latest row for (user_id, purpose), and only a grant
+-- carrying the server's exact current policy version is effective.
+CREATE TABLE IF NOT EXISTS user_privacy_consent_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('granted', 'withdrawn')),
+    locale TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_privacy_consent_user_purpose_latest
+    ON user_privacy_consent_events(user_id, purpose, created_at, id);
+CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_update
+BEFORE UPDATE ON user_privacy_consent_events
+BEGIN
+    SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_delete
+BEFORE DELETE ON user_privacy_consent_events
+BEGIN
+    SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+END;
+
+-- Durable App Store consumption-report delivery.  The webhook audit row and
+-- this outbox row are committed together; transient App Store/API failures are
+-- retried until the notification's 12-hour response deadline.
+CREATE TABLE IF NOT EXISTS apple_consumption_outbox (
+    id TEXT PRIMARY KEY,
+    event_id TEXT UNIQUE NOT NULL,
+    transaction_id TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT '',
+    transaction_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sending', 'submitted', 'cancelled', 'failed', 'expired')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    deadline_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL DEFAULT '',
+    last_status TEXT NOT NULL DEFAULT '',
+    last_http_status INTEGER NOT NULL DEFAULT 0,
+    last_retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+    last_consent_event_id TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL DEFAULT '',
+    cancelled_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_due
+    ON apple_consumption_outbox(status, next_attempt_at, deadline_at);
+CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_user
+    ON apple_consumption_outbox(user_id, status);
+
+CREATE TABLE IF NOT EXISTS apple_consumption_delivery_attempts (
+    id TEXT PRIMARY KEY,
+    outbox_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    http_status INTEGER NOT NULL DEFAULT 0,
+    retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+    consent_event_id TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    FOREIGN KEY(outbox_id) REFERENCES apple_consumption_outbox(id),
+    UNIQUE(outbox_id, attempt_no)
+);
+CREATE INDEX IF NOT EXISTS idx_apple_consumption_attempts_outbox
+    ON apple_consumption_delivery_attempts(outbox_id, attempt_no);
+
 CREATE TABLE IF NOT EXISTS site_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT '',
@@ -5906,6 +5978,160 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         # 继续走兼容推断，SQLite/PostgreSQL 均为纯 ADD COLUMN。
         """
         ALTER TABLE jlpt_exam_sessions ADD COLUMN exam_contract_snapshot_json TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        122,
+        "privacy consent events: versioned append-only user decisions",
+        # 121 is intentionally reserved by the parallel JLPT payment branch.
+        # This portable table migration covers existing SQLite and PostgreSQL;
+        # fresh SQLite also declares the table in SCHEMA above.  There is no
+        # mutable consent column in settings: every decision is a new event.
+        """
+        CREATE TABLE IF NOT EXISTS user_privacy_consent_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK (decision IN ('granted', 'withdrawn')),
+            locale TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_privacy_consent_user_purpose_latest
+            ON user_privacy_consent_events(user_id, purpose, created_at, id);
+        """,
+    ),
+    (
+        123,
+        "privacy consent events: reject update/delete (sqlite)",
+        """
+        -- backend: sqlite
+        CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_update
+        BEFORE UPDATE ON user_privacy_consent_events
+        BEGIN
+            SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_delete
+        BEFORE DELETE ON user_privacy_consent_events
+        BEGIN
+            SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+        END;
+        """,
+    ),
+    (
+        124,
+        "privacy consent events: reject update/delete (postgres)",
+        """
+        -- backend: postgres
+        CREATE OR REPLACE FUNCTION reject_privacy_consent_event_mutation()
+        RETURNS trigger AS $$
+        BEGIN
+            RAISE EXCEPTION 'user_privacy_consent_events is append-only';
+        END;
+        $$ LANGUAGE plpgsql;
+        DROP TRIGGER IF EXISTS trg_privacy_consent_no_update ON user_privacy_consent_events;
+        CREATE TRIGGER trg_privacy_consent_no_update
+            BEFORE UPDATE ON user_privacy_consent_events
+            FOR EACH ROW EXECUTE FUNCTION reject_privacy_consent_event_mutation();
+        DROP TRIGGER IF EXISTS trg_privacy_consent_no_delete ON user_privacy_consent_events;
+        CREATE TRIGGER trg_privacy_consent_no_delete
+            BEFORE DELETE ON user_privacy_consent_events
+            FOR EACH ROW EXECUTE FUNCTION reject_privacy_consent_event_mutation();
+        """,
+    ),
+    (
+        128,
+        "apple consumption delivery: durable outbox and attempt audit",
+        # 125-127 are reserved by the parallel JLPT exam hardening work.
+        # This DDL is intentionally portable across SQLite and PostgreSQL.
+        """
+        CREATE TABLE IF NOT EXISTS apple_consumption_outbox (
+            id TEXT PRIMARY KEY,
+            event_id TEXT UNIQUE NOT NULL,
+            transaction_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            transaction_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'sending', 'submitted', 'cancelled', 'failed', 'expired')),
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL,
+            deadline_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL DEFAULT '',
+            last_status TEXT NOT NULL DEFAULT '',
+            last_http_status INTEGER NOT NULL DEFAULT 0,
+            last_retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+            last_consent_event_id TEXT NOT NULL DEFAULT '',
+            submitted_at TEXT NOT NULL DEFAULT '',
+            cancelled_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_due
+            ON apple_consumption_outbox(status, next_attempt_at, deadline_at);
+        CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_user
+            ON apple_consumption_outbox(user_id, status);
+
+        CREATE TABLE IF NOT EXISTS apple_consumption_delivery_attempts (
+            id TEXT PRIMARY KEY,
+            outbox_id TEXT NOT NULL,
+            attempt_no INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            http_status INTEGER NOT NULL DEFAULT 0,
+            retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+            consent_event_id TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            FOREIGN KEY(outbox_id) REFERENCES apple_consumption_outbox(id),
+            UNIQUE(outbox_id, attempt_no)
+        );
+        CREATE INDEX IF NOT EXISTS idx_apple_consumption_attempts_outbox
+            ON apple_consumption_delivery_attempts(outbox_id, attempt_no);
+        """,
+    ),
+    (
+        131,
+        "guide Apple IAP: immutable purchase-time sample-content evidence",
+        # Consumption reports describe what happened for one transaction.  These
+        # snapshots prevent later catalog status/preview/SKU edits from changing
+        # sampleContentProvided for historical purchases.  Existing rows remain
+        # fail-closed (false + empty SKU).
+        """
+        ALTER TABLE guide_orders ADD COLUMN apple_product_id_snapshot TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_orders ADD COLUMN apple_sample_content_provided INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
+    (
+        134,
+        "Apple IAP: global canonical transaction claim registry",
+        # 132-133 are reserved by the parallel JLPT pipeline work.  One Apple
+        # transaction id must be redeemable only once across every purchase
+        # table, user, process, and product family.  The primary key is the
+        # cross-process arbiter on both SQLite and PostgreSQL; the claim and its
+        # family-specific grant are committed in the same money transaction.
+        """
+        CREATE TABLE IF NOT EXISTS apple_transaction_registry (
+            transaction_id TEXT PRIMARY KEY,
+            original_transaction_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            purchase_family TEXT NOT NULL
+                CHECK (purchase_family IN ('membership', 'wallet', 'guide', 'unknown')),
+            resource_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            app_account_token TEXT NOT NULL DEFAULT '',
+            bundle_id TEXT NOT NULL,
+            claim_status TEXT NOT NULL DEFAULT 'claimed'
+                CHECK (claim_status IN ('claimed', 'fulfilled', 'revoked')),
+            grant_reference TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_apple_transaction_registry_user
+            ON apple_transaction_registry(user_id, purchase_family, created_at);
+        CREATE INDEX IF NOT EXISTS idx_apple_transaction_registry_original
+            ON apple_transaction_registry(original_transaction_id, product_id);
         """,
     ),
 ]
