@@ -155,7 +155,12 @@ test("conflict recovery replays the exact paid start credential", async () => {
   const resumed = await restoreAuthoritativeJlptSession({
     start: async (examId, options) => {
       observed = { examId, options };
-      return { sessionId: "session-1", resumed: true, answerRevision: 4 };
+      return {
+        sessionId: "session-1",
+        examId: "exam-paid",
+        resumed: true,
+        answerRevision: 4,
+      };
     },
     examId: "exam-paid",
     expectedSessionId: "session-1",
@@ -174,6 +179,21 @@ test("conflict recovery replays the exact paid start credential", async () => {
   await assert.rejects(
     restoreAuthoritativeJlptSession({
       start: async () => ({ sessionId: "new-session", resumed: false }),
+      examId: "exam-paid",
+      expectedSessionId: "session-1",
+      requestKey: "jlpt-web:exam-paid:original",
+      confirmedChargeCoins: 100,
+    }),
+    /session changed/i,
+  );
+
+  await assert.rejects(
+    restoreAuthoritativeJlptSession({
+      start: async () => ({
+        sessionId: "session-1",
+        examId: "different-exam",
+        resumed: true,
+      }),
       examId: "exam-paid",
       expectedSessionId: "session-1",
       requestKey: "jlpt-web:exam-paid:original",

@@ -201,7 +201,11 @@ export async function restoreAuthoritativeJlptSession({
   confirmedChargeCoins: number;
 }): Promise<GuideJlptExamStart> {
   const resumed = await start(examId, { requestKey, confirmedChargeCoins });
-  if (resumed.sessionId !== expectedSessionId || !resumed.resumed) {
+  if (
+    resumed.sessionId !== expectedSessionId ||
+    resumed.examId !== examId ||
+    !resumed.resumed
+  ) {
     throw new Error("JLPT session changed while restoring progress");
   }
   return resumed;
