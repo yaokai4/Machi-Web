@@ -13921,7 +13921,17 @@ def _apple_consumption_purchase(
         return {"kind": "consumable", "order": wallet}
     guide = _apple_consumption_guide_order(conn, user_id, transaction)
     if guide:
-        return {"kind": "non_consumable", "order": guide}
+        product_row = conn.execute(
+            "SELECT id, slug, status, apple_product_id, ios_iap_product_id, preview_content "
+            "FROM guide_products WHERE id=? LIMIT 1",
+            (str(guide.get("product_id") or ""),),
+        ).fetchone()
+        return {
+            "kind": "non_consumable",
+            "order": guide,
+            "product": dict(product_row) if product_row else {},
+            "transaction_product_id": str(transaction.get("productId") or "").strip(),
+        }
     membership = _apple_consumption_membership_order(conn, user_id, transaction)
     if membership:
         return {"kind": "subscription", **membership}
@@ -13947,7 +13957,20 @@ def _apple_target_transaction_consumption(
         "FROM wallet_ledger_entries WHERE user_id=? ORDER BY created_at, id",
         (user_id,),
     ).fetchall()
+    refund_links = {
+        str(raw["id"]): {
+            "spend_id": str(raw["wallet_ledger_entry_id"] or ""),
+            "points": int(raw["price_points"] or 0),
+        }
+        for raw in conn.execute(
+            "SELECT id, wallet_ledger_entry_id, price_points FROM guide_orders "
+            "WHERE user_id=? AND wallet_ledger_entry_id<>''",
+            (user_id,),
+        ).fetchall()
+    }
     lots: list[dict[str, Any]] = []
+    spend_allocations: dict[str, list[tuple[dict[str, Any], int]]] = {}
+    reversed_spends: set[str] = set()
     running_balance = 0
     target_credited = 0
     target_consumed = 0
@@ -13959,6 +13982,26 @@ def _apple_target_transaction_consumption(
         if running_balance != int(row.get("balance_after") or 0):
             return None
         if delta > 0:
+            if str(row.get("entry_type") or "") == "refund_credit":
+                link = refund_links.get(str(row.get("source_order_id") or ""))
+                spend_id = str((link or {}).get("spend_id") or "")
+                allocations = spend_allocations.get(spend_id)
+                if (str(row.get("source_type") or "") != "refund"
+                        or not link or not allocations or spend_id in reversed_spends
+                        or int(link["points"]) != delta
+                        or sum(amount for _lot, amount in allocations) != delta):
+                    # A refund credit may be a reversal rather than a new coin
+                    # grant. Without the guide order's immutable spend pointer,
+                    # lot-level consumption cannot be reported truthfully.
+                    return None
+                for lot, amount in allocations:
+                    lot["remaining"] = int(lot["remaining"]) + amount
+                    if lot["target"]:
+                        target_consumed -= amount
+                        if target_consumed < 0:
+                            return None
+                reversed_spends.add(spend_id)
+                continue
             is_target = (
                 str(row.get("source_order_id") or "") == target_order_no
                 and str(row.get("entry_type") or "") in ("topup", "bonus")
@@ -13971,6 +14014,7 @@ def _apple_target_transaction_consumption(
             continue
         remaining_debit = -delta
         is_consumption = str(row.get("entry_type") or "") == "spend"
+        allocations: list[tuple[dict[str, Any], int]] = []
         for lot in lots:
             available = int(lot["remaining"])
             if available <= 0:
@@ -13978,6 +14022,7 @@ def _apple_target_transaction_consumption(
             taken = min(available, remaining_debit)
             lot["remaining"] = available - taken
             remaining_debit -= taken
+            allocations.append((lot, taken))
             if lot["target"]:
                 if is_consumption:
                     target_consumed += taken
@@ -13987,6 +14032,8 @@ def _apple_target_transaction_consumption(
                 break
         if remaining_debit:
             return None
+        if is_consumption:
+            spend_allocations[str(row.get("id") or "")] = allocations
     balance_row = conn.execute(
         "SELECT balance_points FROM wallet_accounts WHERE user_id=?", (user_id,)
     ).fetchone()
@@ -14050,10 +14097,29 @@ def _apple_consumption_payload(
         # The new v2 fields are intentionally sparse: delivery is proven by the
         # settled order + entitlement above, while usage/consumption isn't
         # recorded for guides and Apple calculates subscription consumption.
+        # Only the explicitly mapped hero SKU records have an audited
+        # pre-purchase preview flow. Other product kinds and unmapped guides
+        # remain false rather than being inferred from a generic preview field.
+        product = purchase.get("product") if purchase.get("kind") == "non_consumable" else {}
+        slug = str(product.get("slug") or "") if isinstance(product, dict) else ""
+        expected_product_id = GUIDE_HERO_IAP_PRODUCTS.get(slug, "")
+        configured_product_ids = {
+            str(product.get(column) or "").strip()
+            for column in ("apple_product_id", "ios_iap_product_id")
+            if str(product.get(column) or "").strip()
+        } if isinstance(product, dict) else set()
+        sample_content_provided = bool(
+            isinstance(product, dict)
+            and str(product.get("status") or "") == "published"
+            and expected_product_id
+            and configured_product_ids == {expected_product_id}
+            and str(purchase.get("transaction_product_id") or "") == expected_product_id
+            and str(product.get("preview_content") or "").strip()
+        )
         return {
             "customerConsented": True,
             "deliveryStatus": "DELIVERED",
-            "sampleContentProvided": False,
+            "sampleContentProvided": sample_content_provided,
         }
     return None
 
@@ -14134,8 +14200,9 @@ def _apple_consumption_delivery_result(
         req.add_header("Content-Type", "application/json")
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
+            http_status = int(getattr(resp, "status", 0) or 200)
         ACCESS_LOG.info("apple consumption info submitted")
-        result["status"] = "submitted"
+        result.update(status="submitted", http_status=http_status)
         return result
     except urllib.error.HTTPError as exc:
         code = int(exc.code or 0)
@@ -14314,6 +14381,19 @@ def _finish_apple_consumption_outbox_attempt(
         ),
     )
     if getattr(cur, "rowcount", 0) != 1:
+        current = conn.execute(
+            "SELECT status, attempt_count, last_status FROM apple_consumption_outbox "
+            "WHERE id=?",
+            (job["id"],),
+        ).fetchone()
+        if (current
+                and str(current["status"] or "") == "cancelled"
+                and int(current["attempt_count"] or 0) == attempt_no
+                and str(current["last_status"] or "") == "consent_withdrawn"):
+            # Consent withdrawal wins the state transition, but the network
+            # attempt already happened and must remain in the append-only audit.
+            # Returning commits that attempt without reviving/retrying the job.
+            return "cancelled"
         raise RuntimeError("apple consumption outbox lease lost")
     return status
 
