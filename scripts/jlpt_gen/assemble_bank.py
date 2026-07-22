@@ -8,6 +8,8 @@ import json
 import sys
 from collections import defaultdict
 
+from atomic_json import dump_json_atomic
+
 # 整卷构成（qtype -> 题数）与时长（秒）。参照 2020 改订后官方结构裁剪。
 PAPER = {
     "N5": {"kanji_reading": 7, "orthography": 5, "context": 6, "paraphrase": 3,
@@ -44,6 +46,34 @@ def norm_stem(s):
     return "".join(str(s or "").split())
 
 
+def valid_question_shape(q, level, qtype, *, grouped=False):
+    if level not in PAPER or qtype not in ABBREV:
+        return False
+    choices = q.get("choices")
+    answer_index = q.get("answerIndex")
+    if not (
+        isinstance(choices, list)
+        and len(choices) == 4
+        and isinstance(answer_index, int)
+        and 0 <= answer_index <= 3
+    ):
+        return False
+    if not str(q.get("stem") or "").strip():
+        return False
+    if grouped and (
+        not str(q.get("group") or "").strip()
+        or not str(q.get("passage") or "").strip()
+    ):
+        return False
+    return True
+
+
+def grouped_question_identity(q, level, qtype, group, passage):
+    """Content identity for collision checks inside one atomic passage group."""
+    choices = tuple(sorted(norm_stem(choice) for choice in q["choices"]))
+    return (level, qtype, group, passage, norm_stem(q["stem"]), choices)
+
+
 def main(src, out):
     with open(src, encoding="utf-8") as source_file:
         raw = json.load(source_file)
@@ -51,32 +81,48 @@ def main(src, out):
     pool = root.get("pool") if isinstance(root, dict) else None
     assert isinstance(pool, list) and pool, "no pool in workflow output"
 
-    # sanity + dedupe
+    # Sanity + dedupe. Grouped passage questions are validated atomically: a
+    # malformed/colliding member rejects the whole (level, qtype, group), so a
+    # partial article can never leak into the bank as an orphan.
     seen = set()
-    clean = []
-    for q in pool:
+    clean_records = []
+    grouped_records = defaultdict(list)
+    for index, q in enumerate(pool):
         if not isinstance(q, dict):
             continue
         lvl = str(q.get("level") or "").upper()
         qt = str(q.get("qtype") or "")
-        if lvl not in PAPER or qt not in ABBREV:
+        if qt in GROUPED:
+            group = str(q.get("group") or "").strip()
+            if group:
+                grouped_records[(lvl, qt, group)].append((index, q))
             continue
-        ch = q.get("choices")
-        ai = q.get("answerIndex")
-        if not (isinstance(ch, list) and len(ch) == 4 and isinstance(ai, int) and 0 <= ai <= 3):
-            continue
-        if not str(q.get("stem") or "").strip():
+        if not valid_question_shape(q, lvl, qt):
             continue
         key = (lvl, qt, norm_stem(q["stem"]))
-        if qt in GROUPED:
-            # Grouped question stems intentionally repeat across passages
-            # (for example every article has a "（１）..." question).  The
-            # passage is therefore part of the question's content identity.
-            key += (norm_stem(q.get("passage")),)
         if key in seen:
             continue
         seen.add(key)
-        clean.append(q)
+        clean_records.append((index, q))
+
+    for (lvl, qt, group), members in grouped_records.items():
+        if len(members) < 2:
+            continue
+        if any(not valid_question_shape(q, lvl, qt, grouped=True) for _, q in members):
+            continue
+        passages = {norm_stem(q["passage"]) for _, q in members}
+        if len(passages) != 1:
+            continue
+        passage = next(iter(passages))
+        identities = [
+            grouped_question_identity(q, lvl, qt, group, passage)
+            for _, q in members
+        ]
+        if len(set(identities)) != len(identities):
+            continue
+        clean_records.extend(members)
+
+    clean = [q for _, q in sorted(clean_records, key=lambda record: record[0])]
 
     # assign stable ids per (level, qtype) in input order
     counters = defaultdict(int)
@@ -147,8 +193,7 @@ def main(src, out):
         "questions": questions_out,
         "papers": papers,
     }
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(bank, f, ensure_ascii=False, indent=1)
+    dump_json_atomic(out, bank, ensure_ascii=False, indent=1)
 
     print(f"questions: {len(questions_out)}")
     for lvl in PAPER:
