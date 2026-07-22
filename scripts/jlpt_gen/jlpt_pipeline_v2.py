@@ -7,8 +7,10 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,17 @@ from jlpt_contract_v2 import (
 
 WORKFLOW_PATH = Path(__file__).with_name("jlpt_bank_gen_v2.js")
 _INTEGER = re.compile(r"[0-9]+")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_RUN_ARTIFACT_FILENAMES = {
+    "request": "request.json",
+    "raw": "raw.json",
+    "sanitized": "sanitized.json",
+    "rejected": "rejected.json",
+    "metrics": "metrics.json",
+    "receipt": "receipt.json",
+    "verified": "verified.json",
+    "reviewMetrics": "review_metrics.json",
+}
 
 
 class PipelineError(ValueError):
@@ -51,6 +64,10 @@ def _json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _pretty_json_bytes(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+
+
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -72,6 +89,30 @@ def _load_json(path: Path, *, label: str) -> Any:
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     dump_json_atomic(str(path), value, ensure_ascii=False, indent=2)
+
+
+def _write_bytes_atomic(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    temporary = Path(temporary_name)
+    open_descriptor: int | None = descriptor
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            open_descriptor = None
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        if open_descriptor is not None:
+            os.close(open_descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _artifact(path: Path, *, count: int | None = None) -> dict[str, Any]:
@@ -233,7 +274,10 @@ def _verify_manifest_artifacts(run_dir: Path, manifest: dict[str, Any], names: t
         metadata = artifacts.get(name)
         if not isinstance(metadata, dict):
             raise PipelineError("artifact_missing", f"manifest is missing {name} metadata")
-        path = run_dir / metadata.get("path", "")
+        expected_name = _RUN_ARTIFACT_FILENAMES.get(name)
+        if expected_name is None or metadata.get("path") != expected_name:
+            raise PipelineError("artifact_tampered", f"{name} artifact path differs")
+        path = run_dir / expected_name
         if not path.is_file():
             raise PipelineError("artifact_missing", f"{name} artifact is missing")
         if _sha256_file(path) != metadata.get("sha256"):
@@ -466,6 +510,515 @@ def verify_run(*, run_dir: Path, receipt_path: Path) -> dict[str, Any]:
     return {"status": "ok", "runId": updated["runId"], "resumed": False}
 
 
+def _reviewed_records(run_dir: Path) -> tuple[str, list[dict[str, Any]]]:
+    manifest = _load_run(run_dir)
+    if manifest.get("state") != "reviewed":
+        raise PipelineError("state_invalid", f"run {manifest.get('runId')} is not reviewed")
+    _verify_manifest_artifacts(
+        run_dir,
+        manifest,
+        ("raw", "sanitized", "rejected", "metrics", "receipt", "verified", "reviewMetrics"),
+    )
+    sanitized = _load_json(run_dir / "sanitized.json", label="sanitized artifact")
+    verified = _load_json(run_dir / "verified.json", label="verified artifact")
+    receipt = _load_json(run_dir / "receipt.json", label="receipt artifact")
+    if not isinstance(sanitized, list) or not isinstance(verified, list):
+        raise PipelineError("artifact_invalid", "sanitized and verified artifacts must be arrays")
+    recomputed, _ = _validated_receipt(receipt, manifest=manifest, questions=sanitized)
+    if recomputed != verified:
+        raise PipelineError("artifact_tampered", "verified artifact differs from receipt-qualified records")
+    verified_meta = manifest["artifacts"]["verified"]
+    if verified_meta.get("count") != len(verified):
+        raise PipelineError("artifact_tampered", "verified artifact count differs from manifest")
+    expected_level = manifest["request"]["level"]
+    for record in verified:
+        if (
+            not isinstance(record, dict)
+            or record.get("level") != expected_level
+            or record.get("reviewStatus") != "verified"
+            or record.get("source") != "jlptv2"
+            or not str(record.get("id", "")).startswith("jlptv2-q-")
+            or not _SHA256.fullmatch(str(record.get("contentHash", "")))
+        ):
+            raise PipelineError("artifact_invalid", "verified record is not a valid jlptv2 record")
+    return manifest["runId"], verified
+
+
+def _target_snapshot(target_path: Path) -> tuple[bytes, dict[str, Any], dict[str, dict[str, Any]]]:
+    if not target_path.is_file():
+        raise PipelineError("target_missing", "staging target must be an existing JSON bank")
+    payload = target_path.read_bytes()
+    target = _load_json(target_path, label="target bank")
+    if not isinstance(target, dict):
+        raise PipelineError("target_invalid", "target bank must be an object")
+    questions = target.get("questions", [])
+    if not isinstance(questions, list) or any(not isinstance(item, dict) for item in questions):
+        raise PipelineError("target_invalid", "target questions must be an array of objects")
+    by_id: dict[str, dict[str, Any]] = {}
+    for question in questions:
+        question_id = question.get("id")
+        if isinstance(question_id, str) and question_id:
+            by_id[question_id] = question
+    return payload, target, by_id
+
+
+def _release_id(candidate_hash: str, target_path: Path, observed_hash: str) -> str:
+    identity = {
+        "candidateSha256": candidate_hash,
+        "targetPath": str(target_path.resolve()),
+        "targetObservedSha256": observed_hash,
+    }
+    return f"jlptv2-release-{_sha256_bytes(_json_bytes(identity))[:16]}"
+
+
+def _release_artifact(path: Path, expected_name: str) -> dict[str, Any]:
+    if path.name != expected_name:
+        raise PipelineError("artifact_tampered", f"release artifact path must be {expected_name}")
+    return _artifact(path)
+
+
+def stage_release(
+    *, release_dir: Path, run_dirs: list[Path], target_path: Path
+) -> dict[str, Any]:
+    if not run_dirs:
+        raise PipelineError("run_invalid", "stage requires at least one reviewed run")
+    unique_by_id: dict[str, dict[str, Any]] = {}
+    run_ids: list[str] = []
+    duplicate_exact = 0
+    for run_dir in run_dirs:
+        run_id, records = _reviewed_records(run_dir)
+        run_ids.append(run_id)
+        for record in records:
+            question_id = record["id"]
+            previous = unique_by_id.get(question_id)
+            if previous is None:
+                unique_by_id[question_id] = record
+            elif previous.get("contentHash") == record.get("contentHash"):
+                duplicate_exact += 1
+                if _json_bytes(record) < _json_bytes(previous):
+                    unique_by_id[question_id] = record
+            else:
+                raise PipelineError(
+                    "identity_conflict",
+                    f"question identity {question_id} has multiple reviewed revisions",
+                )
+    questions = [copy.deepcopy(record) for record in unique_by_id.values()]
+    questions.sort(key=lambda record: (record["level"], record["id"], record["contentHash"]))
+    counts_by_level = {
+        level: sum(record["level"] == level for record in questions)
+        for level in ("N1", "N2")
+    }
+    contract = load_contract()
+    minimums = contract["releaseGate"]["minimumApprovedUniqueStagedByLevel"]
+    shortfalls = {
+        level: {"minimum": minimums[level], "available": counts_by_level[level]}
+        for level in ("N1", "N2")
+        if counts_by_level[level] < minimums[level]
+    }
+    if shortfalls:
+        raise PipelineError(
+            "release_shortfall",
+            "verified unique questions do not meet the N1/N2 staging floors",
+            details=shortfalls,
+        )
+    for question in questions:
+        question["publicationStatus"] = "pending"
+    candidate = {
+        "candidateVersion": 2,
+        "contractVersion": contract["contractVersion"],
+        "contractSha256": contract_sha256(),
+        "source": "jlptv2",
+        "publicationStatus": "pending",
+        "runIds": sorted(set(run_ids)),
+        "counts": {
+            "verifiedUniqueByLevel": counts_by_level,
+            "duplicateExact": duplicate_exact,
+            "total": len(questions),
+        },
+        "questions": questions,
+    }
+    candidate_hash = _sha256_bytes(_pretty_json_bytes(candidate))
+    target_bytes, target, old_by_id = _target_snapshot(target_path)
+    observed_hash = _sha256_bytes(target_bytes)
+    release_id = _release_id(candidate_hash, target_path, observed_hash)
+    new_by_id = {question["id"]: question for question in questions}
+    added = sorted(set(new_by_id) - set(old_by_id))
+    removed = sorted(set(old_by_id) - set(new_by_id))
+    common = set(new_by_id) & set(old_by_id)
+    changed = sorted(
+        question_id
+        for question_id in common
+        if new_by_id[question_id].get("contentHash") != old_by_id[question_id].get("contentHash")
+    )
+    unchanged = sorted(common - set(changed))
+    diff = {
+        "diffVersion": 2,
+        "releaseId": release_id,
+        "candidateSha256": candidate_hash,
+        "target": {
+            "path": str(target_path.resolve()),
+            "observedSha256": observed_hash,
+            "source": target.get("source"),
+        },
+        "counts": {
+            "added": len(added),
+            "removed": len(removed),
+            "changed": len(changed),
+            "unchanged": len(unchanged),
+        },
+        "ids": {
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+            "unchanged": unchanged,
+        },
+    }
+    diff_hash = _sha256_bytes(_pretty_json_bytes(diff))
+    manifest = {
+        "releaseVersion": 2,
+        "releaseId": release_id,
+        "state": "pending",
+        "contract": {
+            "version": contract["contractVersion"],
+            "sha256": contract_sha256(),
+        },
+        "runIds": sorted(set(run_ids)),
+        "target": {
+            "path": str(target_path.resolve()),
+            "observedSha256": observed_hash,
+            "source": target.get("source"),
+        },
+        "counts": {
+            "verifiedUniqueByLevel": counts_by_level,
+            "duplicateExact": duplicate_exact,
+            "total": len(questions),
+        },
+        "artifacts": {
+            "candidate": {
+                "path": "candidate.json",
+                "sha256": candidate_hash,
+                "bytes": len(_pretty_json_bytes(candidate)),
+                "count": len(questions),
+            },
+            "diff": {
+                "path": "diff.json",
+                "sha256": diff_hash,
+                "bytes": len(_pretty_json_bytes(diff)),
+            },
+        },
+        "signature": None,
+        "publication": None,
+        "rollback": None,
+    }
+    manifest_path = release_dir / "manifest.json"
+    candidate_path = release_dir / "candidate.json"
+    diff_path = release_dir / "diff.json"
+    if manifest_path.exists():
+        existing = _load_json(manifest_path, label="release manifest")
+        if existing != manifest:
+            raise PipelineError("release_immutable_mismatch", "existing release differs from staged inputs")
+        if not candidate_path.is_file() or not diff_path.is_file():
+            raise PipelineError("artifact_missing", "pending release artifact is missing")
+        if _sha256_file(candidate_path) != candidate_hash or _sha256_file(diff_path) != diff_hash:
+            raise PipelineError("artifact_tampered", "pending release artifact hash differs")
+        return {"status": "ok", "releaseId": release_id, "resumed": True}
+    release_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_json_artifact(candidate_path, candidate)
+    _ensure_json_artifact(diff_path, diff)
+    if _release_artifact(candidate_path, "candidate.json")["sha256"] != candidate_hash:
+        raise PipelineError("artifact_tampered", "candidate serialization hash differs")
+    if _release_artifact(diff_path, "diff.json")["sha256"] != diff_hash:
+        raise PipelineError("artifact_tampered", "diff serialization hash differs")
+    _write_json(manifest_path, manifest)
+    return {"status": "ok", "releaseId": release_id, "resumed": False}
+
+
+def _load_release(release_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    manifest_path = release_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise PipelineError("release_missing", "release manifest is missing")
+    manifest = _load_json(manifest_path, label="release manifest")
+    if not isinstance(manifest, dict) or manifest.get("releaseVersion") != 2:
+        raise PipelineError("release_invalid", "releaseVersion must be 2")
+    if manifest.get("contract", {}).get("sha256") != contract_sha256():
+        raise PipelineError("contract_drift", "current contract hash differs from release")
+    artifacts = manifest.get("artifacts", {})
+    for name, filename in (("candidate", "candidate.json"), ("diff", "diff.json")):
+        metadata = artifacts.get(name)
+        if not isinstance(metadata, dict) or metadata.get("path") != filename:
+            raise PipelineError("artifact_missing", f"release {name} metadata is missing")
+        path = release_dir / filename
+        if not path.is_file() or _sha256_file(path) != metadata.get("sha256"):
+            raise PipelineError("artifact_tampered", f"release {name} artifact hash differs")
+    candidate = _load_json(release_dir / "candidate.json", label="release candidate")
+    diff = _load_json(release_dir / "diff.json", label="release diff")
+    if (
+        not isinstance(candidate, dict)
+        or candidate.get("contractSha256") != contract_sha256()
+        or candidate.get("source") != "jlptv2"
+        or candidate.get("publicationStatus") != "pending"
+        or not isinstance(candidate.get("questions"), list)
+    ):
+        raise PipelineError("release_invalid", "release candidate is invalid")
+    candidate_hash = artifacts["candidate"]["sha256"]
+    target = manifest.get("target", {})
+    if (
+        not isinstance(diff, dict)
+        or diff.get("releaseId") != manifest.get("releaseId")
+        or diff.get("candidateSha256") != candidate_hash
+        or diff.get("target") != target
+        or _release_id(
+            candidate_hash,
+            Path(str(target.get("path", ""))),
+            str(target.get("observedSha256", "")),
+        )
+        != manifest.get("releaseId")
+    ):
+        raise PipelineError("release_invalid", "release identity or diff differs from candidate")
+    question_ids = [question.get("id") for question in candidate["questions"] if isinstance(question, dict)]
+    if len(question_ids) != len(candidate["questions"]) or len(set(question_ids)) != len(question_ids):
+        raise PipelineError("release_invalid", "release candidate question identities are invalid")
+    return manifest, candidate
+
+
+def _validated_signature(
+    path: Path,
+    *,
+    decision: str,
+    expected: dict[str, str],
+) -> tuple[dict[str, Any], str]:
+    try:
+        source_hash = _sha256_file(path)
+        signature = _load_json(path, label=f"{decision} signature")
+    except PipelineError as error:
+        raise PipelineError("signature_invalid", str(error)) from error
+    hash_field = "candidateSha256" if decision == "publish" else "publishedSha256"
+    required = {
+        "releaseId",
+        "contractSha256",
+        hash_field,
+        "decision",
+        "approvedBy",
+        "signedAt",
+    }
+    if not isinstance(signature, dict) or set(signature) != required:
+        raise PipelineError("signature_invalid", f"{decision} signature fields are not exact")
+    if any(not isinstance(signature[key], str) or not signature[key] for key in required):
+        raise PipelineError("signature_invalid", f"{decision} signature fields must be non-empty strings")
+    if signature["decision"] != decision:
+        raise PipelineError("signature_invalid", f"signature decision must be {decision}")
+    for key, value in expected.items():
+        if signature.get(key) != value:
+            raise PipelineError("signature_invalid", f"signature {key} does not match release")
+    if not _SHA256.fullmatch(signature["contractSha256"]) or not _SHA256.fullmatch(signature[hash_field]):
+        raise PipelineError("signature_invalid", "signature hashes must be lowercase SHA-256 values")
+    return signature, source_hash
+
+
+def _assert_release_target(manifest: dict[str, Any], target_path: Path) -> bytes:
+    if str(target_path.resolve()) != manifest.get("target", {}).get("path"):
+        raise PipelineError("target_changed", "target path differs from staged release")
+    if not target_path.is_file():
+        raise PipelineError("target_changed", "staged target is missing")
+    return target_path.read_bytes()
+
+
+def _assert_publishable_target(
+    target_path: Path, target_bytes: bytes, candidate: dict[str, Any]
+) -> None:
+    if target_path.name == "jlpt_bank_v1.json":
+        raise PipelineError("target_protected", "the v1 bank path is protected")
+    try:
+        target = json.loads(target_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PipelineError("target_changed", f"target is no longer valid JSON: {error}") from error
+    if not isinstance(target, dict):
+        raise PipelineError("target_changed", "target is no longer an object")
+    if target.get("source") == "mockv1":
+        raise PipelineError("target_protected", "mockv1 targets are protected")
+    for question in candidate["questions"]:
+        if not isinstance(question, dict) or not str(question.get("id", "")).startswith("jlptv2-q-"):
+            raise PipelineError("target_protected", "candidate contains a non-jlptv2 question ID")
+
+
+def publish_release(
+    *, release_dir: Path, target_path: Path, signature_path: Path
+) -> dict[str, Any]:
+    manifest, candidate = _load_release(release_dir)
+    target_bytes = _assert_release_target(manifest, target_path)
+    _assert_publishable_target(target_path, target_bytes, candidate)
+    expected_signature = {
+        "releaseId": manifest["releaseId"],
+        "contractSha256": manifest["contract"]["sha256"],
+        "candidateSha256": manifest["artifacts"]["candidate"]["sha256"],
+    }
+    signature, signature_source_hash = _validated_signature(
+        signature_path, decision="publish", expected=expected_signature
+    )
+    state = manifest.get("state")
+    if state == "published":
+        if manifest.get("signature", {}).get("sourceSha256") != signature_source_hash:
+            raise PipelineError("signature_changed", "publish signature differs from recorded signature")
+        if _sha256_bytes(target_bytes) != manifest.get("publication", {}).get("targetSha256"):
+            raise PipelineError("target_changed", "published target hash differs from release")
+        return {"status": "ok", "releaseId": manifest["releaseId"], "resumed": True}
+    if state not in {"pending", "publishing"}:
+        raise PipelineError("state_invalid", "release must be pending before publication")
+
+    staged_hash = manifest["target"]["observedSha256"]
+    approved_questions = []
+    for question in candidate["questions"]:
+        approved = copy.deepcopy(question)
+        approved["reviewStatus"] = "approved"
+        approved["publicationStatus"] = "published"
+        approved_questions.append(approved)
+    bank = {
+        "source": "jlptv2",
+        "contractVersion": manifest["contract"]["version"],
+        "contractSha256": manifest["contract"]["sha256"],
+        "releaseId": manifest["releaseId"],
+        "approvedBy": signature["approvedBy"],
+        "publishedAt": signature["signedAt"],
+        "questions": approved_questions,
+    }
+    published_bytes = _pretty_json_bytes(bank)
+    published_hash = _sha256_bytes(published_bytes)
+    previous_path = release_dir / "rollback" / "previous.json"
+    copied_signature_path = release_dir / "publish_signature.json"
+    if state == "pending":
+        if _sha256_bytes(target_bytes) != staged_hash:
+            raise PipelineError("target_changed", "target hash differs from staged diff")
+        if previous_path.exists():
+            if previous_path.read_bytes() != target_bytes:
+                raise PipelineError("artifact_collision", "rollback backup differs from target")
+        else:
+            _write_bytes_atomic(previous_path, target_bytes)
+        _ensure_json_artifact(copied_signature_path, signature)
+        publishing = copy.deepcopy(manifest)
+        publishing["state"] = "publishing"
+        publishing["signature"] = {
+            "path": copied_signature_path.name,
+            "sha256": _sha256_file(copied_signature_path),
+            "sourceSha256": signature_source_hash,
+            "decision": "publish",
+            "approvedBy": signature["approvedBy"],
+            "signedAt": signature["signedAt"],
+        }
+        publishing["artifacts"].update(
+            publishSignature=_artifact(copied_signature_path),
+            previous={
+                "path": "rollback/previous.json",
+                "sha256": _sha256_file(previous_path),
+                "bytes": len(previous_path.read_bytes()),
+            },
+        )
+        publishing["publication"] = {
+            "targetPath": str(target_path.resolve()),
+            "previousSha256": staged_hash,
+            "targetSha256": published_hash,
+        }
+        _write_json(release_dir / "manifest.json", publishing)
+        manifest = publishing
+    else:
+        if manifest.get("signature", {}).get("sourceSha256") != signature_source_hash:
+            raise PipelineError("signature_changed", "publish signature differs from in-progress signature")
+        for name, path in (("publishSignature", copied_signature_path), ("previous", previous_path)):
+            metadata = manifest.get("artifacts", {}).get(name)
+            if not isinstance(metadata, dict) or not path.is_file() or _sha256_file(path) != metadata.get("sha256"):
+                raise PipelineError("artifact_tampered", f"{name} artifact differs during publication")
+        current_hash = _sha256_bytes(target_bytes)
+        if current_hash not in {staged_hash, published_hash}:
+            raise PipelineError("target_changed", "target changed during publication")
+
+    if _sha256_bytes(target_bytes) != published_hash:
+        _write_bytes_atomic(target_path, published_bytes)
+    if _sha256_file(target_path) != published_hash:
+        raise PipelineError("target_changed", "published target hash verification failed")
+    completed = copy.deepcopy(manifest)
+    completed["state"] = "published"
+    _write_json(release_dir / "manifest.json", completed)
+    return {"status": "ok", "releaseId": manifest["releaseId"], "resumed": False}
+
+
+def rollback_release(
+    *, release_dir: Path, target_path: Path, signature_path: Path
+) -> dict[str, Any]:
+    manifest, _ = _load_release(release_dir)
+    target_bytes = _assert_release_target(manifest, target_path)
+    state = manifest.get("state")
+    if state not in {"published", "rolling_back", "rolled_back"}:
+        raise PipelineError("state_invalid", "release must be published before rollback")
+    publication = manifest.get("publication") or {}
+    published_hash = publication.get("targetSha256")
+    if not isinstance(published_hash, str):
+        raise PipelineError("release_invalid", "release publication hash is missing")
+    expected_signature = {
+        "releaseId": manifest["releaseId"],
+        "contractSha256": manifest["contract"]["sha256"],
+        "publishedSha256": published_hash,
+    }
+    signature, signature_source_hash = _validated_signature(
+        signature_path, decision="rollback", expected=expected_signature
+    )
+    previous_path = release_dir / "rollback" / "previous.json"
+    previous_meta = manifest.get("artifacts", {}).get("previous")
+    if (
+        not isinstance(previous_meta, dict)
+        or previous_meta.get("path") != "rollback/previous.json"
+        or not previous_path.is_file()
+        or _sha256_file(previous_path) != previous_meta.get("sha256")
+    ):
+        raise PipelineError("artifact_tampered", "rollback backup hash differs")
+    previous_bytes = previous_path.read_bytes()
+    previous_hash = _sha256_bytes(previous_bytes)
+    if previous_hash != publication.get("previousSha256"):
+        raise PipelineError("artifact_tampered", "rollback backup differs from publication metadata")
+    if state == "rolled_back":
+        if manifest.get("rollback", {}).get("signatureSourceSha256") != signature_source_hash:
+            raise PipelineError("signature_changed", "rollback signature differs from recorded signature")
+        if _sha256_bytes(target_bytes) != previous_hash:
+            raise PipelineError("target_changed", "rolled-back target hash differs")
+        return {"status": "ok", "releaseId": manifest["releaseId"], "resumed": True}
+
+    rollback_signature_path = release_dir / "rollback_signature.json"
+    if state == "published":
+        if _sha256_bytes(target_bytes) != published_hash:
+            raise PipelineError("target_changed", "current target differs from published release")
+        _ensure_json_artifact(rollback_signature_path, signature)
+        rolling = copy.deepcopy(manifest)
+        rolling["state"] = "rolling_back"
+        rolling["artifacts"]["rollbackSignature"] = _artifact(rollback_signature_path)
+        rolling["rollback"] = {
+            "signatureSourceSha256": signature_source_hash,
+            "approvedBy": signature["approvedBy"],
+            "signedAt": signature["signedAt"],
+            "restoredSha256": previous_hash,
+        }
+        _write_json(release_dir / "manifest.json", rolling)
+        manifest = rolling
+    else:
+        if manifest.get("rollback", {}).get("signatureSourceSha256") != signature_source_hash:
+            raise PipelineError("signature_changed", "rollback signature differs from in-progress signature")
+        metadata = manifest.get("artifacts", {}).get("rollbackSignature")
+        if (
+            not isinstance(metadata, dict)
+            or not rollback_signature_path.is_file()
+            or _sha256_file(rollback_signature_path) != metadata.get("sha256")
+        ):
+            raise PipelineError("artifact_tampered", "rollback signature artifact differs")
+        if _sha256_bytes(target_bytes) not in {published_hash, previous_hash}:
+            raise PipelineError("target_changed", "target changed during rollback")
+
+    if _sha256_bytes(target_bytes) != previous_hash:
+        _write_bytes_atomic(target_path, previous_bytes)
+    if _sha256_file(target_path) != previous_hash:
+        raise PipelineError("target_changed", "restored target hash verification failed")
+    completed = copy.deepcopy(manifest)
+    completed["state"] = "rolled_back"
+    _write_json(release_dir / "manifest.json", completed)
+    return {"status": "ok", "releaseId": manifest["releaseId"], "resumed": False}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = _JsonArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -481,6 +1034,18 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_parser = subparsers.add_parser("verify", help="apply a complete independent-review receipt")
     verify_parser.add_argument("--run-dir", required=True)
     verify_parser.add_argument("--receipt", required=True)
+    stage_parser = subparsers.add_parser("stage", help="combine reviewed runs into a pending release")
+    stage_parser.add_argument("--release-dir", required=True)
+    stage_parser.add_argument("--run-dir", action="append", required=True)
+    stage_parser.add_argument("--target", required=True)
+    publish_parser = subparsers.add_parser("publish", help="publish a signed pending release")
+    publish_parser.add_argument("--release-dir", required=True)
+    publish_parser.add_argument("--target", required=True)
+    publish_parser.add_argument("--signature", required=True)
+    rollback_parser = subparsers.add_parser("rollback", help="restore a signed release backup")
+    rollback_parser.add_argument("--release-dir", required=True)
+    rollback_parser.add_argument("--target", required=True)
+    rollback_parser.add_argument("--signature", required=True)
     return parser
 
 
@@ -500,6 +1065,24 @@ def cli(argv: list[str] | None = None) -> int:
             result = ingest_run(run_dir=Path(args.run_dir), source_path=Path(args.source))
         elif args.command == "verify":
             result = verify_run(run_dir=Path(args.run_dir), receipt_path=Path(args.receipt))
+        elif args.command == "stage":
+            result = stage_release(
+                release_dir=Path(args.release_dir),
+                run_dirs=[Path(value) for value in args.run_dir],
+                target_path=Path(args.target),
+            )
+        elif args.command == "publish":
+            result = publish_release(
+                release_dir=Path(args.release_dir),
+                target_path=Path(args.target),
+                signature_path=Path(args.signature),
+            )
+        elif args.command == "rollback":
+            result = rollback_release(
+                release_dir=Path(args.release_dir),
+                target_path=Path(args.target),
+                signature_path=Path(args.signature),
+            )
         else:
             raise PipelineError("command_invalid", f"unsupported command: {args.command}")
     except (ContractError, PipelineError) as error:

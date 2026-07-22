@@ -67,12 +67,12 @@
 - Produces CLI subcommands `stage`, `publish`, and `rollback`.
 - Produces release `manifest.json`, `candidate.json`, `diff.json`, `rollback/previous.json`, and signed state transitions.
 
-- [ ] Add failing tests showing stage only accepts hash-valid verified artifacts, deduplicates equal identity/content, rejects identity conflicts, and enforces N1/N2 minimums.
-- [ ] Add failing tests proving stage is pending and target bytes remain unchanged.
-- [ ] Add failing publish tests for absent/malformed/mismatched human signature, `mockv1` IDs, v1 target path/source, and target changed after diff.
-- [ ] Implement deterministic candidate/diff creation and signature validation with exact release/candidate/contract hashes.
-- [ ] Add failing rollback tests for absent/mismatched signature and current-target tampering; implement exact prior-target restoration only after hash verification.
-- [ ] Run staging/publish/rollback tests and inspect all temp target hashes.
+- [x] Add failing tests showing stage only accepts hash-valid verified artifacts, deduplicates equal identity/content, rejects identity conflicts, and enforces N1/N2 minimums.
+- [x] Add failing tests proving stage is pending and target bytes remain unchanged.
+- [x] Add failing publish tests for absent/malformed/mismatched human signature, `mockv1` IDs, v1 target path/source, and target changed after diff.
+- [x] Implement deterministic candidate/diff creation and signature validation with exact release/candidate/contract hashes.
+- [x] Add failing rollback tests for absent/mismatched signature and current-target tampering; implement exact prior-target restoration only after hash verification.
+- [x] Run staging/publish/rollback tests and inspect all temp target hashes.
 
 ### Task 4: Tracked N1 legacy audit and conversion dry-run
 
