@@ -13613,8 +13613,17 @@ def _guide_reject_external_payment_text(row: dict[str, Any]) -> None:
 
 # ---- App Store Server API (outbound; consumption answers) ----
 
-_APPSTORE_SERVER_API_PROD = "https://api.storekit.itunes.apple.com"
-_APPSTORE_SERVER_API_SANDBOX = "https://api.storekit-sandbox.itunes.apple.com"
+_APPSTORE_SERVER_API_PROD = "https://api.storekit.apple.com"
+_APPSTORE_SERVER_API_SANDBOX = "https://api.storekit-sandbox.apple.com"
+
+APPLE_CONSUMPTION_CONSENT_PURPOSE = "apple_refund_consumption_information"
+APPLE_CONSUMPTION_CONSENT_POLICY_VERSION = "2026-07-22.v1"
+
+# RELEASE GATE (not completed by this server change): the iOS UI must present a
+# separate, informed Apple-consumption-data consent in zh-Hans / ja / en and
+# record the user's explicit choice against the exact policy version above.
+# ATT permission is not this consent.  App Store privacy labels and legal review
+# must also be confirmed before enabling this integration in production.
 
 
 def appstore_server_api_configured() -> bool:
@@ -13656,37 +13665,124 @@ def _appstore_server_api_token() -> str | None:
         return None
 
 
-# Coarse FX only used to pick Apple's lifetimeDollars* BUCKET (an enum with
-# $50-wide bottom steps) — never used for real money math.
-_CONSUMPTION_USD_RATES = {"JPY": 150.0, "CNY": 7.2, "USD": 1.0}
+def record_apple_consumption_consent_event(
+        conn: sqlite3.Connection, user_id: str, *, granted: bool,
+        policy_version: str, locale: str = "", source: str = "") -> dict[str, Any]:
+    """Append one immutable, purpose-bound privacy-consent decision."""
+    if type(granted) is not bool:  # bool is intentionally stricter than truthiness/int
+        raise ValueError("granted must be a JSON boolean")
+    version = str(policy_version or "").strip()
+    if not version:
+        raise ValueError("policy_version is required")
+    event_id = f"{time.time_ns():020d}-{uuid.uuid4().hex}"
+    created_at = now_iso()
+    conn.execute(
+        "INSERT INTO user_privacy_consent_events "
+        "(id, user_id, purpose, policy_version, decision, locale, source, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            event_id,
+            user_id,
+            APPLE_CONSUMPTION_CONSENT_PURPOSE,
+            version,
+            "granted" if granted else "withdrawn",
+            str(locale or "").strip()[:40],
+            str(source or "server").strip()[:80] or "server",
+            created_at,
+        ),
+    )
+    row = conn.execute(
+        "SELECT * FROM user_privacy_consent_events WHERE id = ?", (event_id,)
+    ).fetchone()
+    return dict(row) if row else {}
 
 
-def _consumption_usd(amount_cents: int, currency: str) -> float:
-    rate = _CONSUMPTION_USD_RATES.get((currency or "").upper(), 150.0)
-    return (int(amount_cents or 0) / 100.0) / rate
+def apple_consumption_consent_state(
+        conn: sqlite3.Connection, user_id: str | None) -> dict[str, Any]:
+    """Resolve consent from the latest immutable event, fail-closed.
+
+    A historical grant is not silently upgraded when policy copy changes: the
+    latest event must itself be a grant for the exact current version.
+    """
+    if not user_id:
+        return {"granted": False, "status": "unresolved_user", "consented_at": ""}
+    if not conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+        return {"granted": False, "status": "unresolved_user", "consented_at": ""}
+    row = conn.execute(
+        "SELECT * FROM user_privacy_consent_events "
+        "WHERE user_id = ? AND purpose = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (user_id, APPLE_CONSUMPTION_CONSENT_PURPOSE),
+    ).fetchone()
+    if not row:
+        return {"granted": False, "status": "consent_missing", "consented_at": ""}
+    event = dict(row)
+    if event.get("decision") != "granted":
+        return {"granted": False, "status": "consent_withdrawn", "consented_at": "",
+                "event": event}
+    if event.get("policy_version") != APPLE_CONSUMPTION_CONSENT_POLICY_VERSION:
+        return {"granted": False, "status": "consent_version_mismatch", "consented_at": "",
+                "event": event}
+    return {"granted": True, "status": "consent_granted",
+            "consented_at": str(event.get("created_at") or ""), "event": event}
 
 
-def _consumption_dollar_bucket(amount_usd: float) -> int:
-    """Apple ConsumptionRequest lifetimeDollars* enum: 1 = $0, 2 = <$50,
-    3 = <$100, 4 = <$500, 5 = <$1000, 6 = <$2000, 7 = $2000+."""
-    if amount_usd <= 0:
-        return 1
-    for bucket, limit in ((2, 50.0), (3, 100.0), (4, 500.0), (5, 1000.0), (6, 2000.0)):
-        if amount_usd < limit:
-            return bucket
-    return 7
+def _apple_consumption_wallet_order(
+        conn: sqlite3.Connection, user_id: str, transaction: dict[str, Any]) -> dict[str, Any] | None:
+    tx_id = str(transaction.get("transactionId") or "").strip()
+    original_id = str(transaction.get("originalTransactionId") or "").strip()
+    candidates = [tx_id, original_id, "apple:" + tx_id, "apple:" + original_id]
+    row = conn.execute(
+        "SELECT * FROM wallet_topup_orders WHERE user_id = ? AND payment_provider = 'apple_iap' "
+        "AND provider_trade_no IN (?, ?, ?, ?) AND provider_trade_no <> '' "
+        "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
+        (user_id, *candidates),
+    ).fetchone()
+    if not row:
+        return None
+    order = dict(row)
+    return order if order.get("status") in ("paid", "fulfilled") else None
 
 
-def _consumption_tenure_bucket(created_at_iso: str) -> int:
-    """Apple accountTenure enum: 1 = 0-3 days … 7 = over a year; 0 = undeclared."""
-    dt = _aware(parse_iso(created_at_iso or "")) if created_at_iso else None
-    if not dt:
-        return 0
-    days = max(0, (datetime.now(timezone.utc) - dt).days)
-    for bucket, limit in ((1, 3), (2, 10), (3, 30), (4, 90), (5, 180), (6, 365)):
-        if days < limit:
-            return bucket
-    return 7
+def _apple_consumption_v2_payload(
+        conn: sqlite3.Connection, user_id: str, order: dict[str, Any]) -> dict[str, Any] | None:
+    granted = int(order.get("total_points") or 0)
+    if granted <= 0:
+        return None
+    balance_row = conn.execute(
+        "SELECT balance_points FROM wallet_accounts WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if not balance_row:
+        return None
+    # Wallet coins are fungible.  At most min(balance, this grant) can still be
+    # attributed to this purchase, so max(0, grant-balance) is only a LOWER
+    # BOUND on consumption.  Reporting that bound can understate consumption,
+    # but can never exaggerate it when other top-ups/bonuses are commingled.
+    balance = max(0, int(balance_row["balance_points"] or 0))
+    consumed_lower_bound = max(0, granted - balance)
+    percentage = max(0, min(100000, (consumed_lower_bound * 100000) // granted))
+    payload: dict[str, Any] = {
+        "customerConsented": True,
+        "deliveryStatus": "DELIVERED",
+        "sampleContentProvided": False,
+        "consumptionPercentage": percentage,
+    }
+    if percentage == 100000:
+        payload["refundPreference"] = "DECLINE"
+    elif percentage == 0:
+        credit = conn.execute(
+            "SELECT created_at FROM wallet_ledger_entries "
+            "WHERE user_id = ? AND source_order_id = ? AND entry_type = 'topup' "
+            "ORDER BY created_at LIMIT 1",
+            (user_id, str(order.get("order_no") or "")),
+        ).fetchone()
+        spent_after_delivery = credit and conn.execute(
+            "SELECT 1 FROM wallet_ledger_entries WHERE user_id = ? AND points_delta < 0 "
+            "AND created_at >= ? LIMIT 1",
+            (user_id, str(credit["created_at"] or "")),
+        ).fetchone()
+        if credit and not spent_after_delivery:
+            payload["refundPreference"] = "GRANT_FULL"
+    return payload
 
 
 def apple_send_consumption_info(conn: sqlite3.Connection, transaction: dict[str, Any],
@@ -13699,79 +13795,40 @@ def apple_send_consumption_info(conn: sqlite3.Connection, transaction: dict[str,
     which would make "buy coins → spend them → refund" arbitrage free. All
     figures come from our own ledger; nothing here is user-supplied. Returns a
     short status string for the webhook response / audit log. Never raises."""
-    if not appstore_server_api_configured():
-        ACCESS_LOG.warning("apple consumption request skipped: server api unconfigured")
-        return "unconfigured"
+    # Apple says not to respond at all without a separate, explicit customer
+    # consent.  This gate intentionally precedes config inspection, JWT minting,
+    # payload construction, and every outbound network path.
+    consent = apple_consumption_consent_state(conn, user_id)
+    if not consent.get("granted"):
+        return str(consent.get("status") or "consent_missing")
     tx_id = str(transaction.get("transactionId") or transaction.get("originalTransactionId") or "").strip()
     if not tx_id:
         return "missing_transaction"
+    order = _apple_consumption_wallet_order(conn, str(user_id), transaction)
+    if not order:
+        return "purchase_unresolved"
+    payload = _apple_consumption_v2_payload(conn, str(user_id), order)
+    if not payload:
+        return "purchase_unresolved"
+    if not appstore_server_api_configured():
+        ACCESS_LOG.warning("apple consumption request skipped: server api unconfigured")
+        return "unconfigured"
     token = _appstore_server_api_token()
     if not token:
         return "token_failed"
-    payload: dict[str, Any] = {
-        "accountTenure": 0,
-        "appAccountToken": str(transaction.get("appAccountToken") or ""),
-        "consumptionStatus": 0,        # undeclared until computed below
-        "customerConsented": True,
-        "deliveryStatus": 0,           # delivered and working
-        "lifetimeDollarsPurchased": 0,
-        "lifetimeDollarsRefunded": 0,
-        "platform": 1,                 # Apple
-        "playTime": 0,                 # undeclared (not a game)
-        "refundPreference": 0,
-        "sampleContentProvided": False,
-        "userStatus": 1,               # active
-    }
     try:
-        if user_id:
-            urow = conn.execute("SELECT created_at, status FROM users WHERE id = ?", (user_id,)).fetchone()
-            if urow:
-                payload["accountTenure"] = _consumption_tenure_bucket(str(urow["created_at"] or ""))
-            purchased_usd = 0.0
-            refunded_usd = 0.0
-            for r in conn.execute(
-                    "SELECT currency, status, COALESCE(SUM(amount_cents),0) AS cents FROM wallet_topup_orders "
-                    "WHERE user_id = ? AND status IN ('paid','fulfilled','refunded','chargeback') "
-                    "GROUP BY currency, status", (user_id,)):
-                usd = _consumption_usd(int(r["cents"]), r["currency"])
-                if r["status"] in ("refunded", "chargeback"):
-                    refunded_usd += usd
-                else:
-                    purchased_usd += usd
-            payload["lifetimeDollarsPurchased"] = _consumption_dollar_bucket(purchased_usd)
-            payload["lifetimeDollarsRefunded"] = _consumption_dollar_bucket(refunded_usd)
-            original_id = str(transaction.get("originalTransactionId") or "").strip()
-            order = conn.execute(
-                "SELECT total_points FROM wallet_topup_orders WHERE user_id = ? AND payment_provider = 'apple_iap' "
-                "AND provider_trade_no IN (?, ?) AND provider_trade_no <> '' LIMIT 1",
-                (user_id, tx_id, original_id)).fetchone()
-            if order:
-                granted = int(order["total_points"] or 0)
-                bal_row = conn.execute(
-                    "SELECT balance_points FROM wallet_accounts WHERE user_id = ?", (user_id,)).fetchone()
-                balance = int(bal_row["balance_points"] or 0) if bal_row else 0
-                if granted <= 0 or balance >= granted:
-                    consumption = 1   # coins still all there → not consumed
-                elif balance <= 0:
-                    consumption = 3   # fully consumed
-                else:
-                    consumption = 2   # partially consumed
-                payload["consumptionStatus"] = consumption
-                # not consumed → fine to grant; fully consumed → prefer decline.
-                payload["refundPreference"] = {1: 1, 2: 3, 3: 2}[consumption]
         env = str(transaction.get("environment") or "").strip().lower()
-        base = _APPSTORE_SERVER_API_SANDBOX if env == "sandbox" else _APPSTORE_SERVER_API_PROD
-        url = f"{base}/inApps/v1/transactions/consumption/{urllib.parse.quote(tx_id, safe='')}"
+        base = _APPSTORE_SERVER_API_SANDBOX if env in ("sandbox", "xcode") else _APPSTORE_SERVER_API_PROD
+        url = f"{base}/inApps/v2/transactions/consumption/{urllib.parse.quote(tx_id, safe='')}"
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="PUT")
         req.add_header("Authorization", "Bearer " + token)
         req.add_header("Content-Type", "application/json")
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
-        ACCESS_LOG.info("apple consumption info submitted tx=%s status=%s pref=%s",
-                        tx_id, payload["consumptionStatus"], payload["refundPreference"])
+        ACCESS_LOG.info("apple consumption info submitted")
         return "submitted"
     except urllib.error.HTTPError as exc:
-        ERR_LOG.warning("apple consumption submit http %s tx=%s", exc.code, tx_id)
+        ERR_LOG.warning("apple consumption submit http %s", exc.code)
         return f"http_{exc.code}"
     except Exception as exc:
         ERR_LOG.warning("apple consumption submit failed: %s", type(exc).__name__)
@@ -26897,7 +26954,7 @@ class Handler(BaseHTTPRequestHandler):
         # settings & account misc
         if path == "/api/settings" and method == "GET":
             return self.api_get_settings(conn)
-        if path == "/api/settings" and method == "PATCH":
+        if path == "/api/settings" and method in ("PATCH", "POST"):
             return self.api_update_settings(conn)
         if path == "/api/cache/clear" and method == "POST":
             return self.api_clear_cache(conn)
@@ -28518,10 +28575,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"received": True, "duplicate": True})
 
         if notification_type == "CONSUMPTION_REQUEST":
-            # Apple is deciding a refund for a consumable purchase and expects
-            # consumption data within ~12h; an unanswered request leans toward
-            # granting the refund (free "buy coins → spend → refund" arbitrage).
-            # Answer best-effort even when the user can't be resolved.
+            # The notification itself is already audit-recorded above.  Outbound
+            # consumption data is sent only when the user resolves and their
+            # latest immutable event grants the exact current policy version.
             uid = self._apple_notification_user_id(conn, transaction)
             status = apple_send_consumption_info(conn, transaction, uid)
             return self.send_json({"received": True, "processed": True, "consumption": status})
@@ -41318,6 +41374,10 @@ class Handler(BaseHTTPRequestHandler):
         data["privacy_protect"] = bool(data["privacy_protect"])
         data["recommend_following"] = bool(data["recommend_following"])
         data["recommend_topics"] = bool(data["recommend_topics"])
+        consent = apple_consumption_consent_state(conn, user["id"])
+        data["apple_consumption_consent"] = bool(consent.get("granted"))
+        data["apple_consumption_consent_policy_version"] = APPLE_CONSUMPTION_CONSENT_POLICY_VERSION
+        data["apple_consumption_consented_at"] = str(consent.get("consented_at") or "")
         if data.get("appearance") not in ("light", "dark"):
             data["appearance"] = "light"
         # users.dm_privacy is the enforced source of truth for DM gating
@@ -41331,6 +41391,32 @@ class Handler(BaseHTTPRequestHandler):
     def api_update_settings(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
+        consent_requested = "apple_consumption_consent" in data
+        consent_value: bool | None = None
+        if consent_requested:
+            raw_consent = data.get("apple_consumption_consent")
+            if type(raw_consent) is not bool:
+                raise APIError(
+                    "Apple 消费数据同意必须是 JSON 布尔值",
+                    400,
+                    "invalid_apple_consumption_consent",
+                )
+            consent_value = raw_consent
+            if consent_value:
+                if "apple_consumption_consent_policy_version" not in data:
+                    raise APIError(
+                        "同意时必须提供当前政策版本",
+                        400,
+                        "apple_consumption_policy_version_required",
+                    )
+                supplied_version = data.get("apple_consumption_consent_policy_version")
+                if (type(supplied_version) is not str
+                        or supplied_version != APPLE_CONSUMPTION_CONSENT_POLICY_VERSION):
+                    raise APIError(
+                        "Apple 消费数据同意政策版本已变更，请重新确认",
+                        409,
+                        "apple_consumption_policy_version_mismatch",
+                    )
         allowed = {
             "language", "appearance", "push_likes", "push_comments", "push_follows", "push_messages",
             "push_inquiries",
@@ -41361,6 +41447,25 @@ class Handler(BaseHTTPRequestHandler):
                 (mapped, now_iso(), user["id"]),
             )
             user["dm_privacy"] = mapped
+        if consent_requested:
+            # Withdrawal is never blocked by a stale/missing client version: it
+            # takes effect immediately and records a new event for the current
+            # server policy.  A grant, by contrast, passed the exact-version
+            # check above before any ordinary settings field was updated.
+            requested_locale = data.get("language")
+            if requested_locale not in ("zh-Hans", "ja", "en"):
+                row = conn.execute(
+                    "SELECT language FROM settings WHERE user_id = ?", (user["id"],)
+                ).fetchone()
+                requested_locale = str(row["language"] or "") if row else ""
+            record_apple_consumption_consent_event(
+                conn,
+                user["id"],
+                granted=bool(consent_value),
+                policy_version=APPLE_CONSUMPTION_CONSENT_POLICY_VERSION,
+                locale=str(requested_locale or ""),
+                source="settings_api",
+            )
         self.api_get_settings(conn)
 
     def api_clear_cache(self, conn: sqlite3.Connection) -> None:

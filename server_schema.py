@@ -308,6 +308,33 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL
 );
 
+-- Privacy consent is an audit event, never a mutable settings boolean.  The
+-- current decision is the latest row for (user_id, purpose), and only a grant
+-- carrying the server's exact current policy version is effective.
+CREATE TABLE IF NOT EXISTS user_privacy_consent_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('granted', 'withdrawn')),
+    locale TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_privacy_consent_user_purpose_latest
+    ON user_privacy_consent_events(user_id, purpose, created_at, id);
+CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_update
+BEFORE UPDATE ON user_privacy_consent_events
+BEGIN
+    SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_delete
+BEFORE DELETE ON user_privacy_consent_events
+BEGIN
+    SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+END;
+
 CREATE TABLE IF NOT EXISTS site_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT '',
@@ -5736,6 +5763,67 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             WHEN 'N5' THEN 100 WHEN 'N4' THEN 150 WHEN 'N3' THEN 250
             WHEN 'N2' THEN 350 WHEN 'N1' THEN 400 ELSE 200 END
          WHERE kind = 'mock' AND id LIKE 'mockv1-%';
+        """,
+    ),
+    (
+        122,
+        "privacy consent events: versioned append-only user decisions",
+        # 121 is intentionally reserved by the parallel JLPT payment branch.
+        # This portable table migration covers existing SQLite and PostgreSQL;
+        # fresh SQLite also declares the table in SCHEMA above.  There is no
+        # mutable consent column in settings: every decision is a new event.
+        """
+        CREATE TABLE IF NOT EXISTS user_privacy_consent_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK (decision IN ('granted', 'withdrawn')),
+            locale TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_privacy_consent_user_purpose_latest
+            ON user_privacy_consent_events(user_id, purpose, created_at, id);
+        """,
+    ),
+    (
+        123,
+        "privacy consent events: reject update/delete (sqlite)",
+        """
+        -- backend: sqlite
+        CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_update
+        BEFORE UPDATE ON user_privacy_consent_events
+        BEGIN
+            SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_privacy_consent_no_delete
+        BEFORE DELETE ON user_privacy_consent_events
+        BEGIN
+            SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
+        END;
+        """,
+    ),
+    (
+        124,
+        "privacy consent events: reject update/delete (postgres)",
+        """
+        -- backend: postgres
+        CREATE OR REPLACE FUNCTION reject_privacy_consent_event_mutation()
+        RETURNS trigger AS $$
+        BEGIN
+            RAISE EXCEPTION 'user_privacy_consent_events is append-only';
+        END;
+        $$ LANGUAGE plpgsql;
+        DROP TRIGGER IF EXISTS trg_privacy_consent_no_update ON user_privacy_consent_events;
+        CREATE TRIGGER trg_privacy_consent_no_update
+            BEFORE UPDATE ON user_privacy_consent_events
+            FOR EACH ROW EXECUTE FUNCTION reject_privacy_consent_event_mutation();
+        DROP TRIGGER IF EXISTS trg_privacy_consent_no_delete ON user_privacy_consent_events;
+        CREATE TRIGGER trg_privacy_consent_no_delete
+            BEFORE DELETE ON user_privacy_consent_events
+            FOR EACH ROW EXECUTE FUNCTION reject_privacy_consent_event_mutation();
         """,
     ),
 ]
