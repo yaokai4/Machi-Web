@@ -15,13 +15,45 @@
 """
 import json
 import random
+import re
 import sys
 from collections import Counter, defaultdict
+
+from atomic_json import dump_json_atomic
+
+
+_POSITION_REFERENCE = re.compile(
+    r"(?P<prefix>(?:选项|選項|選択肢|故选|故選)\s*)(?P<digit>[1-4])"
+    r"|第(?P<ordinal>[一二三四1-4])(?P<suffix>[项項])"
+)
+_CHINESE_POSITION = ("一", "二", "三", "四")
+_CHINESE_POSITION_INDEX = {value: index for index, value in enumerate(_CHINESE_POSITION)}
+
+
+def remap_explanation_positions(explanation, old_to_new):
+    """Move explicit 1-based choice references with their original choice."""
+    if not isinstance(explanation, str) or not explanation:
+        return explanation
+
+    def replace(match):
+        digit = match.group("digit")
+        if digit:
+            new_position = old_to_new[int(digit) - 1] + 1
+            return f"{match.group('prefix')}{new_position}"
+
+        ordinal = match.group("ordinal")
+        old_index = int(ordinal) - 1 if ordinal.isdigit() else _CHINESE_POSITION_INDEX[ordinal]
+        new_index = old_to_new[old_index]
+        rewritten = str(new_index + 1) if ordinal.isdigit() else _CHINESE_POSITION[new_index]
+        return f"第{rewritten}{match.group('suffix')}"
+
+    return _POSITION_REFERENCE.sub(replace, explanation)
 
 
 def place(q, target):
     """把正确项移到 target 位，其余干扰项确定性打散。"""
-    correct = q["choices"][q["answerIndex"]]
+    old_choices = list(q["choices"])
+    correct = old_choices[q["answerIndex"]]
     # Always start from a content-canonical order.  Shuffling the current order
     # reapplies the same permutation on every run and therefore is not
     # idempotent, even when the RNG seed itself is deterministic.
@@ -30,6 +62,8 @@ def place(q, target):
     rng.shuffle(others)
     new_choices = others[:target] + [correct] + others[target:]
     assert len(new_choices) == 4 and new_choices[target] == correct, q["id"]
+    old_to_new = {old_index: new_choices.index(choice) for old_index, choice in enumerate(old_choices)}
+    q["explanation"] = remap_explanation_positions(q.get("explanation"), old_to_new)
     q["choices"] = new_choices
     q["answerIndex"] = target
 
@@ -67,6 +101,9 @@ def main(path):
     for lvl, p in sorted(bank["papers"].items()):
         ids = p["questionIds"]
         n = len(ids)
+        if n == 0:
+            print(f"  {lvl}: (no questions)")
+            continue
         row = []
         for pick in range(4):
             hit = sum(1 for i in ids if by_id[i]["answerIndex"] == pick)
@@ -79,8 +116,7 @@ def main(path):
     bank["note"] = (
         "原创 JLPT 风格模拟题，多模型生成 + 双盲对抗校验；正确项位置按卷内科目均衡重排；非官方真题。"
     )
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(bank, f, ensure_ascii=False, indent=1)
+    dump_json_atomic(path, bank, ensure_ascii=False, indent=1)
     print("已写回", path, "version=2")
 
 
