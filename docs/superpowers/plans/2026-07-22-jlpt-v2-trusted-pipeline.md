@@ -33,12 +33,12 @@
 - Produces: `load_contract()`, `contract_sha256()`, `validate_run_request()`, `sanitize_pool()`, `question_identity()`, and `group_identity()`.
 - Produces normalized records with `id`, `groupId`, `contentHash`, and `reviewStatus="pending"`.
 
-- [ ] Add failing tests proving Python paper maps derive from JSON, JavaScript has no object-literal `PAPER` copy, missing contract/run arguments fail, option reorder preserves ID/hash, and semantic/answer/explanation changes update `contentHash`.
-- [ ] Run the focused tests and confirm missing module/contract failures.
-- [ ] Add the JSON contract with question/run/receipt schemas, qtypes, paper spec, section durations, quality gate, and N1/N2 1,000 release floors.
-- [ ] Implement strict contract loading, schema subset validation, canonicalization, group/question ID, content hash, duplicate/conflict detection, and pool sanitization.
-- [ ] Refactor `assemble_bank.py` to derive compatibility constants from the contract and refactor JavaScript to consume `args.contract` plus strict `level/group/wave` values.
-- [ ] Run focused identity/contract tests and the existing generator suite.
+- [x] Add failing tests proving Python paper maps derive from JSON, JavaScript has no object-literal `PAPER` copy, missing contract/run arguments fail, option reorder preserves ID/hash, and semantic/answer/explanation changes update `contentHash`.
+- [x] Run the focused tests and confirm missing module/contract failures.
+- [x] Add the JSON contract with question/run/receipt schemas, qtypes, paper spec, section durations, quality gate, and N1/N2 1,000 release floors.
+- [x] Implement strict contract loading, schema subset validation, canonicalization, group/question ID, content hash, duplicate/conflict detection, and pool sanitization.
+- [x] Refactor `assemble_bank.py` to derive compatibility constants from the contract and refactor JavaScript to consume `args.contract` plus strict `level/group/wave` values.
+- [x] Run focused identity/contract tests and the existing generator suite.
 
 ### Task 2: Fail-closed run CLI and resumable manifest
 

@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://machi.example/schemas/jlpt-contract-v2.json",
+  "contractVersion": 2,
+  "identityVersion": 1,
+  "source": "jlptv2",
+  "questionSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "level",
+      "section",
+      "qtype",
+      "stem",
+      "passage",
+      "group",
+      "choices",
+      "answerIndex",
+      "explanation",
+      "difficulty"
+    ],
+    "properties": {
+      "level": {"type": "string", "enum": ["N1", "N2", "N3", "N4", "N5"]},
+      "section": {"type": "string", "enum": ["vocab", "grammar", "reading", "listening"]},
+      "qtype": {"type": "string"},
+      "stem": {"type": "string", "minLength": 1},
+      "passage": {"type": "string"},
+      "group": {"type": "string"},
+      "choices": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "uniqueItems": true,
+        "items": {"type": "string", "minLength": 1}
+      },
+      "answerIndex": {"type": "integer", "minimum": 0, "maximum": 3},
+      "explanation": {"type": "string", "minLength": 1},
+      "difficulty": {"type": "integer", "minimum": 1, "maximum": 5},
+      "theme": {"type": "string"}
+    }
+  },
+  "runSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["level", "group", "wave"],
+    "properties": {
+      "level": {"type": "string", "enum": ["N1", "N2"]},
+      "group": {"type": "string", "enum": ["lex", "rc"]},
+      "wave": {"type": "integer", "minimum": 1, "maximum": 9999}
+    }
+  },
+  "receiptSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "runId",
+      "contractSha256",
+      "sourceSha256",
+      "reviewers",
+      "verdicts",
+      "issuedAt"
+    ],
+    "properties": {
+      "runId": {"type": "string", "minLength": 1},
+      "contractSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "sourceSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "reviewers": {
+        "type": "array",
+        "minItems": 2,
+        "uniqueItems": true,
+        "items": {"type": "string", "minLength": 1}
+      },
+      "verdicts": {"type": "array"},
+      "issuedAt": {"type": "string", "minLength": 1}
+    }
+  },
+  "qualityGate": {
+    "minimumIndependentReviewers": 2,
+    "requireUnanimous": true,
+    "rejectFatal": true,
+    "requireAnswerAgreement": true
+  },
+  "releaseGate": {
+    "minimumApprovedUniqueStagedByLevel": {"N1": 1000, "N2": 1000}
+  },
+  "generationGroups": {
+    "lex": [
+      "kanji_reading",
+      "orthography",
+      "word_formation",
+      "context",
+      "paraphrase",
+      "usage",
+      "grammar_form",
+      "sentence_assembly",
+      "text_grammar"
+    ],
+    "rc": [
+      "reading_short",
+      "reading_mid",
+      "reading_long",
+      "reading_info",
+      "listen_task",
+      "listen_point",
+      "listen_gist",
+      "listen_response",
+      "listen_integrated"
+    ]
+  },
+  "generationNeeds": {
+    "N1": {
+      "kanji_reading": 110,
+      "context": 130,
+      "paraphrase": 100,
+      "usage": 100,
+      "grammar_form": 200,
+      "sentence_assembly": 100,
+      "text_grammar": 85,
+      "reading_short": 55,
+      "reading_mid": 120,
+      "reading_long": 90,
+      "reading_info": 40,
+      "listen_task": 100,
+      "listen_point": 100,
+      "listen_gist": 70,
+      "listen_response": 100,
+      "listen_integrated": 40
+    },
+    "N2": {
+      "kanji_reading": 95,
+      "orthography": 80,
+      "word_formation": 80,
+      "context": 120,
+      "paraphrase": 95,
+      "usage": 95,
+      "grammar_form": 190,
+      "sentence_assembly": 95,
+      "text_grammar": 80,
+      "reading_short": 55,
+      "reading_mid": 110,
+      "reading_long": 75,
+      "reading_info": 40,
+      "listen_task": 95,
+      "listen_point": 95,
+      "listen_gist": 65,
+      "listen_response": 95,
+      "listen_integrated": 35
+    }
+  },
+  "qtypes": {
+    "kanji_reading": {"abbreviation": "kr", "section": "vocab", "groupMode": "single", "minimumGroupMembers": 0},
+    "orthography": {"abbreviation": "or", "section": "vocab", "groupMode": "single", "minimumGroupMembers": 0},
+    "word_formation": {"abbreviation": "wf", "section": "vocab", "groupMode": "single", "minimumGroupMembers": 0},
+    "context": {"abbreviation": "cx", "section": "vocab", "groupMode": "single", "minimumGroupMembers": 0},
+    "paraphrase": {"abbreviation": "pp", "section": "vocab", "groupMode": "single", "minimumGroupMembers": 0},
+    "usage": {"abbreviation": "us", "section": "vocab", "groupMode": "single", "minimumGroupMembers": 0},
+    "grammar_form": {"abbreviation": "gf", "section": "grammar", "groupMode": "single", "minimumGroupMembers": 0},
+    "sentence_assembly": {"abbreviation": "sa", "section": "grammar", "groupMode": "single", "minimumGroupMembers": 0},
+    "text_grammar": {"abbreviation": "tg", "section": "grammar", "groupMode": "atomic", "minimumGroupMembers": 2},
+    "reading_short": {"abbreviation": "rs", "section": "reading", "groupMode": "atomic", "minimumGroupMembers": 1},
+    "reading_mid": {"abbreviation": "rm", "section": "reading", "groupMode": "atomic", "minimumGroupMembers": 1},
+    "reading_long": {"abbreviation": "rl", "section": "reading", "groupMode": "atomic", "minimumGroupMembers": 1},
+    "reading_info": {"abbreviation": "ri", "section": "reading", "groupMode": "atomic", "minimumGroupMembers": 1},
+    "listen_task": {"abbreviation": "lt", "section": "listening", "groupMode": "single_script", "minimumGroupMembers": 0},
+    "listen_point": {"abbreviation": "lp", "section": "listening", "groupMode": "single_script", "minimumGroupMembers": 0},
+    "listen_gist": {"abbreviation": "lg", "section": "listening", "groupMode": "single_script", "minimumGroupMembers": 0},
+    "listen_response": {"abbreviation": "lr", "section": "listening", "groupMode": "single_script", "minimumGroupMembers": 0},
+    "listen_integrated": {"abbreviation": "li", "section": "listening", "groupMode": "single_script", "minimumGroupMembers": 0}
+  },
+  "paperSpec": {
+    "N5": {
+      "kanji_reading": 7,
+      "orthography": 5,
+      "context": 6,
+      "paraphrase": 3,
+      "grammar_form": 9,
+      "sentence_assembly": 4,
+      "text_grammar": 4,
+      "reading_short": 3,
+      "reading_mid": 2,
+      "reading_info": 1,
+      "listen_task": 5,
+      "listen_point": 5,
+      "listen_gist": 2,
+      "listen_response": 4
+    },
+    "N4": {
+      "kanji_reading": 7,
+      "orthography": 5,
+      "context": 8,
+      "paraphrase": 4,
+      "usage": 4,
+      "grammar_form": 13,
+      "sentence_assembly": 4,
+      "text_grammar": 4,
+      "reading_short": 4,
+      "reading_mid": 4,
+      "reading_info": 2,
+      "listen_task": 6,
+      "listen_point": 6,
+      "listen_gist": 3,
+      "listen_response": 4
+    },
+    "N3": {
+      "kanji_reading": 8,
+      "orthography": 6,
+      "context": 11,
+      "paraphrase": 5,
+      "usage": 5,
+      "grammar_form": 13,
+      "sentence_assembly": 5,
+      "text_grammar": 5,
+      "reading_short": 4,
+      "reading_mid": 6,
+      "reading_long": 4,
+      "reading_info": 2,
+      "listen_task": 6,
+      "listen_point": 6,
+      "listen_gist": 3,
+      "listen_response": 4
+    },
+    "N2": {
+      "kanji_reading": 5,
+      "orthography": 5,
+      "word_formation": 5,
+      "context": 7,
+      "paraphrase": 5,
+      "usage": 5,
+      "grammar_form": 12,
+      "sentence_assembly": 5,
+      "text_grammar": 5,
+      "reading_short": 5,
+      "reading_mid": 9,
+      "reading_long": 4,
+      "reading_info": 2,
+      "listen_task": 5,
+      "listen_point": 6,
+      "listen_gist": 5,
+      "listen_response": 12,
+      "listen_integrated": 4
+    },
+    "N1": {
+      "kanji_reading": 6,
+      "context": 7,
+      "paraphrase": 6,
+      "usage": 6,
+      "grammar_form": 10,
+      "sentence_assembly": 5,
+      "text_grammar": 5,
+      "reading_short": 4,
+      "reading_mid": 9,
+      "reading_long": 4,
+      "reading_info": 2,
+      "listen_task": 5,
+      "listen_point": 6,
+      "listen_gist": 5,
+      "listen_response": 11,
+      "listen_integrated": 3
+    }
+  },
+  "sectionLayouts": {
+    "N1": [
+      {"name": "written", "title": "言語知識・読解", "durationSeconds": 6600},
+      {"name": "listening", "title": "聴解", "durationSeconds": 3300}
+    ],
+    "N2": [
+      {"name": "written", "title": "言語知識・読解", "durationSeconds": 6300},
+      {"name": "listening", "title": "聴解", "durationSeconds": 3000}
+    ],
+    "N3": [
+      {"name": "vocab", "title": "言語知識（文字・語彙）", "durationSeconds": 1800},
+      {"name": "grammar_reading", "title": "言語知識（文法）・読解", "durationSeconds": 4200},
+      {"name": "listening", "title": "聴解", "durationSeconds": 2400}
+    ],
+    "N4": [
+      {"name": "vocab", "title": "言語知識（文字・語彙）", "durationSeconds": 1500},
+      {"name": "grammar_reading", "title": "言語知識（文法）・読解", "durationSeconds": 3300},
+      {"name": "listening", "title": "聴解", "durationSeconds": 2100}
+    ],
+    "N5": [
+      {"name": "vocab", "title": "言語知識（文字・語彙）", "durationSeconds": 1200},
+      {"name": "grammar_reading", "title": "言語知識（文法）・読解", "durationSeconds": 2400},
+      {"name": "listening", "title": "聴解", "durationSeconds": 1800}
+    ]
+  }
+}

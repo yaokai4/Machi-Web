@@ -8,65 +8,32 @@ export const meta = {
   ],
 }
 
-// args 可能以对象或 JSON 字符串到达(取决于调用方)。都兼容:字符串就 parse。
-// 之前踩坑:args 是字符串时 args.group 为 undefined → 静默回退 lex,N1-rc 没跑成。
+// args 可能以对象或 JSON 字符串到达。解析、合同或运行参数不合格都直接停止；
+// 禁止静默回退到 N1/lex/wave=1（该旧行为曾令 N1-rc 根本没有运行）。
 const A = (typeof args === 'string')
-  ? (() => { try { return JSON.parse(args) } catch (e) { return {} } })()
-  : (args || {})
-const LEVEL = A.level || 'N1'
-const GROUP = A.group || 'lex' // 'lex' = 文字語彙+文法, 'rc' = 読解+聴解
-// 同一 level×group 要跑很多波才能累积到 5000/级。wave 让每波用不同主题偏移 +
+  ? (() => { try { return JSON.parse(args) } catch (e) { throw new Error('args must be valid JSON') } })()
+  : args
+if (!A || typeof A !== 'object' || Array.isArray(A)) throw new Error('args must be an object')
+const CONTRACT = A.contract
+if (!CONTRACT || CONTRACT.contractVersion !== 2 || !CONTRACT.runSchema || !CONTRACT.qtypes) {
+  throw new Error('args.contract must be the authoritative v2 contract snapshot')
+}
+const LEVEL = A.level
+const GROUP = A.group // 'lex' = 文字語彙+文法, 'rc' = 読解+聴解
+const WAVE = A.wave
+const RUN_PROPS = CONTRACT.runSchema.properties || {}
+if (!RUN_PROPS.level || !RUN_PROPS.level.enum.includes(LEVEL)) throw new Error('level must be N1 or N2')
+if (!RUN_PROPS.group || !RUN_PROPS.group.enum.includes(GROUP)) throw new Error('group must be lex or rc')
+if (!Number.isInteger(WAVE) || WAVE < 1 || WAVE > 9999) throw new Error('wave must be an integer from 1 through 9999')
+
+// 同一 level×group 要跑多波；wave 让每波用不同主题偏移 +
 // 唯一批次标签,产出新内容(跨波按 stem 去重);每波结果单独落盘,组卷时合并去重。
-const WAVE = A.wave || 1
-
-// ── 各级各题型「已校验目标数」。N1/N2 加权。overproduction 交给 request 系数。──
-const NEEDS = {
-  N1: { kanji_reading: 110, context: 130, paraphrase: 100, usage: 100, grammar_form: 200, sentence_assembly: 100, text_grammar: 85,
-        reading_short: 55, reading_mid: 120, reading_long: 90, reading_info: 40,
-        listen_task: 100, listen_point: 100, listen_gist: 70, listen_response: 100, listen_integrated: 40 },
-  N2: { kanji_reading: 95, orthography: 80, word_formation: 80, context: 120, paraphrase: 95, usage: 95, grammar_form: 190, sentence_assembly: 95, text_grammar: 80,
-        reading_short: 55, reading_mid: 110, reading_long: 75, reading_info: 40,
-        listen_task: 95, listen_point: 95, listen_gist: 65, listen_response: 95, listen_integrated: 35 },
-  N3: { kanji_reading: 70, orthography: 60, context: 90, paraphrase: 60, usage: 60, grammar_form: 120, sentence_assembly: 55, text_grammar: 50,
-        reading_short: 40, reading_mid: 70, reading_long: 45, reading_info: 25,
-        listen_task: 55, listen_point: 55, listen_gist: 35, listen_response: 55, listen_integrated: 20 },
-  N4: { kanji_reading: 55, orthography: 45, context: 65, paraphrase: 40, usage: 35, grammar_form: 90, sentence_assembly: 40, text_grammar: 35,
-        reading_short: 30, reading_mid: 45, reading_info: 20,
-        listen_task: 40, listen_point: 40, listen_gist: 25, listen_response: 40 },
-  N5: { kanji_reading: 55, orthography: 45, context: 60, paraphrase: 40, grammar_form: 90, sentence_assembly: 40, text_grammar: 35,
-        reading_short: 30, reading_mid: 40, reading_info: 20,
-        listen_task: 40, listen_point: 40, listen_gist: 25, listen_response: 40 },
-}
-// 组卷底线（缺口检查用；实际组卷在 Python 步骤）。题数依据官方 Executive
-// Summary p.7，N1 听力以 2022-12 修订覆盖；必须与 assemble_bank.py 完全一致。
-const PAPER = {
-  N1: { kanji_reading: 6, context: 7, paraphrase: 6, usage: 6, grammar_form: 10, sentence_assembly: 5, text_grammar: 5,
-        reading_short: 4, reading_mid: 9, reading_long: 4, reading_info: 2,
-        listen_task: 5, listen_point: 6, listen_gist: 5, listen_response: 11, listen_integrated: 3 },
-  N2: { kanji_reading: 5, orthography: 5, word_formation: 5, context: 7, paraphrase: 5, usage: 5, grammar_form: 12, sentence_assembly: 5, text_grammar: 5,
-        reading_short: 5, reading_mid: 9, reading_long: 4, reading_info: 2,
-        listen_task: 5, listen_point: 6, listen_gist: 5, listen_response: 12, listen_integrated: 4 },
-  N3: { kanji_reading: 8, orthography: 6, context: 11, paraphrase: 5, usage: 5, grammar_form: 13, sentence_assembly: 5, text_grammar: 5,
-        reading_short: 4, reading_mid: 6, reading_long: 4, reading_info: 2,
-        listen_task: 6, listen_point: 6, listen_gist: 3, listen_response: 4 },
-  N4: { kanji_reading: 7, orthography: 5, context: 8, paraphrase: 4, usage: 4, grammar_form: 13, sentence_assembly: 4, text_grammar: 4,
-        reading_short: 4, reading_mid: 4, reading_info: 2,
-        listen_task: 6, listen_point: 6, listen_gist: 3, listen_response: 4 },
-  N5: { kanji_reading: 7, orthography: 5, context: 6, paraphrase: 3, grammar_form: 9, sentence_assembly: 4, text_grammar: 4,
-        reading_short: 3, reading_mid: 2, reading_info: 1,
-        listen_task: 5, listen_point: 5, listen_gist: 2, listen_response: 4 },
-}
-
-const LEX_QTYPES = ['kanji_reading', 'orthography', 'word_formation', 'context', 'paraphrase', 'usage', 'grammar_form', 'sentence_assembly', 'text_grammar']
-const RC_QTYPES = ['reading_short', 'reading_mid', 'reading_long', 'reading_info', 'listen_task', 'listen_point', 'listen_gist', 'listen_response', 'listen_integrated']
-const LISTEN_QTYPES = new Set(['listen_task', 'listen_point', 'listen_gist', 'listen_response', 'listen_integrated'])
-
-const SECTION_OF = {
-  kanji_reading: 'vocab', orthography: 'vocab', word_formation: 'vocab', context: 'vocab', paraphrase: 'vocab', usage: 'vocab',
-  grammar_form: 'grammar', sentence_assembly: 'grammar', text_grammar: 'grammar',
-  reading_short: 'reading', reading_mid: 'reading', reading_long: 'reading', reading_info: 'reading',
-  listen_task: 'listening', listen_point: 'listening', listen_gist: 'listening', listen_response: 'listening', listen_integrated: 'listening',
-}
+const NEEDS = CONTRACT.generationNeeds
+const PAPER = CONTRACT.paperSpec
+const LEX_QTYPES = CONTRACT.generationGroups.lex
+const RC_QTYPES = CONTRACT.generationGroups.rc
+const SECTION_OF = Object.fromEntries(Object.entries(CONTRACT.qtypes).map(([qtype, spec]) => [qtype, spec.section]))
+const LISTEN_QTYPES = new Set(Object.keys(SECTION_OF).filter(qtype => SECTION_OF[qtype] === 'listening'))
 
 const LEVEL_PROFILE = {
   N5: 'N5＝入门级。词汇约800语，汉字约100字。语法：です/ます体、基础助词、て形/ない形/た形、～ましょう、～てください、あります/います、形容词活用。语境全为日常生活；出现的汉字必须在N5范围，仮名为主。',

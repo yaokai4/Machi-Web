@@ -12,93 +12,52 @@ from collections import defaultdict
 from pathlib import Path
 
 from atomic_json import dump_json_atomic
+from jlpt_contract_v2 import (
+    load_contract,
+    paper_spec,
+    qtype_abbreviations,
+    section_durations,
+)
 
 # 整卷构成（qtype -> 题数）与时长（秒）。题型/近似题数依据 JLPT Executive
 # Summary p.7；N1 听力以 2022-12 官方修订覆盖。时长依据当前官方网页：
 # https://www.jlpt.jp/e/reference/pdf/guidebook_s_e.pdf
 # https://www.jlpt.jp/e/topics/202208051659677223.html
 # https://www.jlpt.jp/e/guideline/testsections.html
-# 必须与 jlpt_bank_gen_v2.js 的生成/补题合同保持一致，不能使用另一套近似配额。
-PAPER = {
-    "N5": {
-        "kanji_reading": 7, "orthography": 5, "context": 6, "paraphrase": 3,
-        "grammar_form": 9, "sentence_assembly": 4, "text_grammar": 4,
-        "reading_short": 3, "reading_mid": 2, "reading_info": 1,
-        "listen_task": 5, "listen_point": 5, "listen_gist": 2, "listen_response": 4,
-    },
-    "N4": {
-        "kanji_reading": 7, "orthography": 5, "context": 8, "paraphrase": 4, "usage": 4,
-        "grammar_form": 13, "sentence_assembly": 4, "text_grammar": 4,
-        "reading_short": 4, "reading_mid": 4, "reading_info": 2,
-        "listen_task": 6, "listen_point": 6, "listen_gist": 3, "listen_response": 4,
-    },
-    "N3": {
-        "kanji_reading": 8, "orthography": 6, "context": 11, "paraphrase": 5, "usage": 5,
-        "grammar_form": 13, "sentence_assembly": 5, "text_grammar": 5,
-        "reading_short": 4, "reading_mid": 6, "reading_long": 4, "reading_info": 2,
-        "listen_task": 6, "listen_point": 6, "listen_gist": 3, "listen_response": 4,
-    },
-    "N2": {
-        "kanji_reading": 5, "orthography": 5, "word_formation": 5,
-        "context": 7, "paraphrase": 5, "usage": 5,
-        "grammar_form": 12, "sentence_assembly": 5, "text_grammar": 5,
-        "reading_short": 5, "reading_mid": 9, "reading_long": 4, "reading_info": 2,
-        "listen_task": 5, "listen_point": 6, "listen_gist": 5, "listen_response": 12,
-        "listen_integrated": 4,
-    },
-    "N1": {
-        "kanji_reading": 6, "context": 7, "paraphrase": 6, "usage": 6,
-        "grammar_form": 10, "sentence_assembly": 5, "text_grammar": 5,
-        "reading_short": 4, "reading_mid": 9, "reading_long": 4, "reading_info": 2,
-        "listen_task": 5, "listen_point": 6, "listen_gist": 5, "listen_response": 11,
-        "listen_integrated": 3,
-    },
-}
-SECTION_DURATION = {
-    "N5": {"vocab": 20 * 60, "grammar_reading": 40 * 60, "listening": 30 * 60},
-    "N4": {"vocab": 25 * 60, "grammar_reading": 55 * 60, "listening": 35 * 60},
-    "N3": {"vocab": 30 * 60, "grammar_reading": 70 * 60, "listening": 40 * 60},
-    "N2": {"written": 105 * 60, "listening": 50 * 60},
-    "N1": {"written": 110 * 60, "listening": 55 * 60},
-}
+# Python and JavaScript consume one authoritative JSON snapshot; neither owns a
+# second editable paper table.
+CONTRACT = load_contract()
+PAPER = paper_spec()
+SECTION_DURATION = section_durations()
 SECTION_TITLE = {
-    "written": "言語知識・読解",
-    "vocab": "言語知識（文字・語彙）",
-    "grammar_reading": "言語知識（文法）・読解",
-    "listening": "聴解",
+    section["name"]: section["title"]
+    for layout in CONTRACT["sectionLayouts"].values()
+    for section in layout
 }
 DURATION = {
     level: sum(section_durations.values())
     for level, section_durations in SECTION_DURATION.items()
 }
 # 卷内题型顺序（vocab → grammar → reading → listening）
-QTYPE_ORDER = ["kanji_reading", "orthography", "word_formation", "context", "paraphrase", "usage",
-               "grammar_form", "sentence_assembly", "text_grammar",
-               "reading_short", "reading_mid", "reading_long", "reading_info",
-               "listen_task", "listen_point", "listen_gist", "listen_response",
-               "listen_integrated"]
-GROUPED = {"text_grammar", "reading_mid", "reading_long", "reading_info", "reading_short"}
+QTYPE_ORDER = list(CONTRACT["qtypes"])
+GROUPED = {
+    qtype for qtype, spec in CONTRACT["qtypes"].items()
+    if spec["groupMode"] == "atomic"
+}
 LISTENING_QTYPES = {
-    "listen_task", "listen_point", "listen_gist", "listen_response", "listen_integrated"
+    qtype for qtype, spec in CONTRACT["qtypes"].items()
+    if spec["section"] == "listening"
 }
 GROUP_MIN_MEMBERS = {
-    "text_grammar": 2,
-    "reading_short": 1,
-    "reading_mid": 1,
-    "reading_long": 1,
-    "reading_info": 1,
+    qtype: spec["minimumGroupMembers"]
+    for qtype, spec in CONTRACT["qtypes"].items()
+    if spec["groupMode"] == "atomic"
 }
-ABBREV = {"kanji_reading": "kr", "orthography": "or", "word_formation": "wf",
-          "context": "cx", "paraphrase": "pp",
-          "usage": "us", "grammar_form": "gf", "sentence_assembly": "sa", "text_grammar": "tg",
-          "reading_short": "rs", "reading_mid": "rm", "reading_long": "rl", "reading_info": "ri",
-          "listen_task": "lt", "listen_point": "lp", "listen_gist": "lg",
-          "listen_response": "lr", "listen_integrated": "li"}
-SECTION_OF = {"kr": "vocab", "or": "vocab", "wf": "vocab", "cx": "vocab", "pp": "vocab", "us": "vocab",
-              "gf": "grammar", "sa": "grammar", "tg": "grammar",
-              "rs": "reading", "rm": "reading", "rl": "reading", "ri": "reading",
-              "lt": "listening", "lp": "listening", "lg": "listening", "lr": "listening",
-              "li": "listening"}
+ABBREV = qtype_abbreviations()
+SECTION_OF = {
+    spec["abbreviation"]: spec["section"]
+    for spec in CONTRACT["qtypes"].values()
+}
 
 
 def _paper_section_name(level, qtype):

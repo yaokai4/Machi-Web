@@ -377,7 +377,11 @@ def _balance_bank(*, explanation: str = "") -> dict[str, object]:
 
 class AssembleBankTests(unittest.TestCase):
     def test_python_paper_spec_matches_generator_contract(self) -> None:
+        contract = json.loads(
+            (JLPT_GEN_DIR / "jlpt_contract_v2.json").read_text(encoding="utf-8")
+        )
         self.assertEqual(EXPECTED_PAPER, assemble_bank.PAPER)
+        self.assertEqual(EXPECTED_PAPER, contract["paperSpec"])
         self.assertEqual(
             {
                 level: tuple(section_durations)
@@ -385,12 +389,10 @@ class AssembleBankTests(unittest.TestCase):
             },
             jlpt_seed._FULL_PAPER_SECTION_NAMES,
         )
-        self.assertEqual(EXPECTED_PAPER, _javascript_const("PAPER"))
-        javascript_needs = _javascript_const("NEEDS")
-        self.assertGreaterEqual(javascript_needs["N2"]["word_formation"], 5)
-        self.assertIn("word_formation", _javascript_const("LEX_QTYPES"))
+        self.assertGreaterEqual(contract["generationNeeds"]["N2"]["word_formation"], 5)
+        self.assertIn("word_formation", contract["generationGroups"]["lex"])
         self.assertEqual(
-            "vocab", _javascript_const("SECTION_OF")["word_formation"]
+            "vocab", contract["qtypes"]["word_formation"]["section"]
         )
         self.assertIn("word_formation", _javascript_const("QTYPE_SPEC"))
         listening_qtypes = {
