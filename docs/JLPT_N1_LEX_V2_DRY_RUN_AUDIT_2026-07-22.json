@@ -1,0 +1,95 @@
+{
+  "auditVersion": 2,
+  "mode": "read-only-conversion-dry-run",
+  "source": {
+    "path": "data/jlpt_gen_pool/N1-lex.json",
+    "sha256": "ab6da7ee64c39b799b49b36e90ecaec089bb951ca0698fd215aeb2342c50adcc",
+    "bytes": 874971,
+    "level": "N1",
+    "group": "lex"
+  },
+  "contract": {
+    "version": 2,
+    "sha256": "94450a119b43c2fa02df0ac661ecba79b2e078a18aa8803a8ef08760e35313e7"
+  },
+  "evidenceCounts": {
+    "raw": 1039,
+    "sanitized": 1039,
+    "unique": 1039,
+    "verified": 0,
+    "approved": 0,
+    "staged": 0
+  },
+  "structure": {
+    "byQtype": {
+      "context": 169,
+      "grammar_form": 260,
+      "kanji_reading": 142,
+      "paraphrase": 130,
+      "sentence_assembly": 124,
+      "text_grammar": 111,
+      "usage": 103
+    },
+    "legacyGroupedItems": 111,
+    "legacyUniqueGroups": 34,
+    "v2UniqueGroupIds": 34,
+    "missingOfficialN1LexQtypes": [],
+    "declaredStatsMatchObserved": true
+  },
+  "deduplication": {
+    "duplicateExact": 0,
+    "identityConflicts": 0
+  },
+  "rejections": {
+    "count": 0,
+    "byReason": {}
+  },
+  "conversionDryRun": {
+    "sha256": "9338794400264f496be729f4e8d02c77b057354a630d879cbd6480853862b8ec",
+    "recordCount": 1039,
+    "artifactWritten": false,
+    "reviewStatus": "pending"
+  },
+  "qualityEvidence": {
+    "provenancePresent": false,
+    "receiptPresent": false,
+    "humanSignaturePresent": false,
+    "reviewStatus": "pending",
+    "reason": "Static schema and identity validation cannot substitute for v2 provenance, a qualifying two-reviewer receipt, or a human publication signature."
+  },
+  "coverage": {
+    "N1": {
+      "lex": {
+        "status": "present-raw-only",
+        "raw": 1039
+      },
+      "rc": {
+        "status": "missing",
+        "raw": 0
+      }
+    },
+    "N2": {
+      "lex": {
+        "status": "missing",
+        "raw": 0
+      },
+      "rc": {
+        "status": "missing",
+        "raw": 0
+      }
+    }
+  },
+  "omissions": [
+    "N1 rc source is absent.",
+    "N2 lex source is absent.",
+    "N2 rc source is absent.",
+    "No v2 review receipt or human publication signature exists for these raw candidates."
+  ],
+  "artifactsCreated": {
+    "run": false,
+    "receipt": false,
+    "convertedBank": false,
+    "candidate": false,
+    "publishedBank": false
+  }
+}

@@ -1100,5 +1100,89 @@ class ReleasePipelineTests(unittest.TestCase):
                 self.assertEqual(legacy_before, legacy_target.read_bytes())
 
 
+class LegacyAuditTests(unittest.TestCase):
+    def test_tracked_n1_legacy_audit_is_deterministic_read_only_and_keeps_quality_counts_zero(self) -> None:
+        source = REPO_ROOT / "data" / "jlpt_gen_pool" / "N1-lex.json"
+        source_before = source.read_bytes()
+        source_hash = hashlib.sha256(source_before).hexdigest()
+        self.assertEqual(
+            "ab6da7ee64c39b799b49b36e90ecaec089bb951ca0698fd215aeb2342c50adcc",
+            source_hash,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_report = root / "audit-first.json"
+            second_report = root / "audit-second.json"
+            first = _run_pipeline(
+                "audit-legacy", "--source", str(source), "--report", str(first_report)
+            )
+            second = _run_pipeline(
+                "audit-legacy", "--source", str(source), "--report", str(second_report)
+            )
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertEqual(first_report.read_bytes(), second_report.read_bytes())
+            self.assertEqual(source_before, source.read_bytes())
+            report = json.loads(first_report.read_text(encoding="utf-8"))
+            self.assertEqual(source_hash, report["source"]["sha256"])
+            self.assertEqual(
+                "9338794400264f496be729f4e8d02c77b057354a630d879cbd6480853862b8ec",
+                report["conversionDryRun"]["sha256"],
+            )
+            self.assertEqual(
+                {
+                    "raw": 1039,
+                    "sanitized": 1039,
+                    "unique": 1039,
+                    "verified": 0,
+                    "approved": 0,
+                    "staged": 0,
+                },
+                report["evidenceCounts"],
+            )
+            self.assertEqual(
+                {
+                    "context": 169,
+                    "grammar_form": 260,
+                    "kanji_reading": 142,
+                    "paraphrase": 130,
+                    "sentence_assembly": 124,
+                    "text_grammar": 111,
+                    "usage": 103,
+                },
+                report["structure"]["byQtype"],
+            )
+            self.assertEqual(111, report["structure"]["legacyGroupedItems"])
+            self.assertEqual(34, report["structure"]["legacyUniqueGroups"])
+            self.assertEqual(34, report["structure"]["v2UniqueGroupIds"])
+            self.assertEqual(0, report["deduplication"]["duplicateExact"])
+            self.assertEqual(0, report["deduplication"]["identityConflicts"])
+            self.assertEqual(0, report["rejections"]["count"])
+            self.assertEqual({}, report["rejections"]["byReason"])
+            self.assertEqual("missing", report["coverage"]["N1"]["rc"]["status"])
+            self.assertEqual(0, report["coverage"]["N1"]["rc"]["raw"])
+            self.assertEqual("missing", report["coverage"]["N2"]["lex"]["status"])
+            self.assertEqual("missing", report["coverage"]["N2"]["rc"]["status"])
+            self.assertFalse(report["qualityEvidence"]["provenancePresent"])
+            self.assertFalse(report["qualityEvidence"]["receiptPresent"])
+            self.assertFalse(report["qualityEvidence"]["humanSignaturePresent"])
+            self.assertEqual("pending", report["qualityEvidence"]["reviewStatus"])
+            self.assertEqual(
+                {
+                    "run": False,
+                    "receipt": False,
+                    "convertedBank": False,
+                    "candidate": False,
+                    "publishedBank": False,
+                },
+                report["artifactsCreated"],
+            )
+            self.assertEqual(
+                {"audit-first.json", "audit-second.json"},
+                {path.name for path in root.iterdir()},
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

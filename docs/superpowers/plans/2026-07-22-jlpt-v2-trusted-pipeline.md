@@ -85,10 +85,10 @@
 - Produces `audit-legacy --source ... --report ...`.
 - Produces six counts: `raw`, `sanitized`, `unique`, `verified`, `approved`, `staged`.
 
-- [ ] Add a failing test against tracked `N1-lex.json` requiring source hash, deterministic conversion hash, exact raw/qtype/group metrics, explicit missing N1-rc/N2 evidence, and zero verified/approved/staged.
-- [ ] Implement read-only legacy audit; report all schema/group/identity rejections without creating a run, receipt, candidate, or published bank.
-- [ ] Run the audit twice and prove the input hash and report conversion hash are unchanged.
-- [ ] Generate the checked-in compact audit report and manually inspect its six evidence counts and omissions.
+- [x] Add a failing test against tracked `N1-lex.json` requiring source hash, deterministic conversion hash, exact raw/qtype/group metrics, explicit missing N1-rc/N2 evidence, and zero verified/approved/staged.
+- [x] Implement read-only legacy audit; report all schema/group/identity rejections without creating a run, receipt, candidate, or published bank.
+- [x] Run the audit twice and prove the input hash and report conversion hash are unchanged.
+- [x] Generate the checked-in compact audit report and manually inspect its six evidence counts and omissions.
 
 ### Task 5: Final verification and commit
 

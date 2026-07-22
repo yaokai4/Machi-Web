@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from jlpt_contract_v2 import (
 
 
 WORKFLOW_PATH = Path(__file__).with_name("jlpt_bank_gen_v2.js")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 _INTEGER = re.compile(r"[0-9]+")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _RUN_ARTIFACT_FILENAMES = {
@@ -1019,6 +1021,164 @@ def rollback_release(
     return {"status": "ok", "releaseId": manifest["releaseId"], "resumed": False}
 
 
+def _display_source_path(source_path: Path) -> str:
+    resolved = source_path.resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(resolved)
+
+
+def audit_legacy(*, source_path: Path, report_path: Path) -> dict[str, Any]:
+    if source_path.resolve() == report_path.resolve():
+        raise PipelineError("target_protected", "audit report must not overwrite its source")
+    try:
+        source_bytes = source_path.read_bytes()
+    except OSError as error:
+        raise PipelineError("file_unreadable", f"cannot read {source_path}: {error}") from error
+    source_hash = _sha256_bytes(source_bytes)
+    try:
+        source = json.loads(source_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PipelineError("json_unreadable", f"legacy source is unreadable: {error}") from error
+    if (
+        not isinstance(source, dict)
+        or source.get("level") != "N1"
+        or source.get("group") != "lex"
+        or not isinstance(source.get("pool"), list)
+        or not source["pool"]
+    ):
+        raise PipelineError(
+            "legacy_source_invalid",
+            "legacy audit requires a non-empty N1 lex pool",
+        )
+    pool = source["pool"]
+    sanitized = sanitize_pool(pool, expected_level="N1", expected_group="lex")
+    records = sanitized["records"]
+    conversion_hash = _sha256_bytes(_json_bytes(records))
+    observed_by_qtype = Counter(
+        str(question.get("qtype", "<invalid>"))
+        for question in pool
+        if isinstance(question, dict)
+    )
+    legacy_groups = [
+        canonical_text(question.get("group", ""))
+        for question in pool
+        if isinstance(question, dict)
+        and isinstance(question.get("group", ""), str)
+        and canonical_text(question.get("group", ""))
+    ]
+    rejection_reasons: Counter[str] = Counter()
+    for rejected in sanitized["rejected"]:
+        rejection_reasons.update(
+            {issue["code"] for issue in rejected.get("issues", []) if isinstance(issue, dict) and "code" in issue}
+        )
+    contract = load_contract()
+    official_n1_lex_qtypes = {
+        qtype
+        for qtype in contract["generationGroups"]["lex"]
+        if qtype in contract["paperSpec"]["N1"]
+    }
+    declared_stats = source.get("stats") if isinstance(source.get("stats"), dict) else {}
+    declared_by_qtype = declared_stats.get("byQtype") if isinstance(declared_stats.get("byQtype"), dict) else {}
+    evidence_counts = {
+        "raw": len(pool),
+        "sanitized": sanitized["metrics"]["sanitized"],
+        "unique": sanitized["metrics"]["unique"],
+        "verified": 0,
+        "approved": 0,
+        "staged": 0,
+    }
+    report = {
+        "auditVersion": 2,
+        "mode": "read-only-conversion-dry-run",
+        "source": {
+            "path": _display_source_path(source_path),
+            "sha256": source_hash,
+            "bytes": len(source_bytes),
+            "level": "N1",
+            "group": "lex",
+        },
+        "contract": {
+            "version": contract["contractVersion"],
+            "sha256": contract_sha256(),
+        },
+        "evidenceCounts": evidence_counts,
+        "structure": {
+            "byQtype": dict(sorted(observed_by_qtype.items())),
+            "legacyGroupedItems": len(legacy_groups),
+            "legacyUniqueGroups": len(set(legacy_groups)),
+            "v2UniqueGroupIds": len(
+                {record["groupId"] for record in records if record.get("groupId")}
+            ),
+            "missingOfficialN1LexQtypes": sorted(
+                official_n1_lex_qtypes - set(observed_by_qtype)
+            ),
+            "declaredStatsMatchObserved": (
+                declared_stats.get("total") == len(pool)
+                and declared_by_qtype == dict(observed_by_qtype)
+            ),
+        },
+        "deduplication": {
+            "duplicateExact": sanitized["metrics"]["duplicateExact"],
+            "identityConflicts": sanitized["metrics"]["identityConflicts"],
+        },
+        "rejections": {
+            "count": sanitized["metrics"]["rejected"],
+            "byReason": dict(sorted(rejection_reasons.items())),
+        },
+        "conversionDryRun": {
+            "sha256": conversion_hash,
+            "recordCount": len(records),
+            "artifactWritten": False,
+            "reviewStatus": "pending",
+        },
+        "qualityEvidence": {
+            "provenancePresent": False,
+            "receiptPresent": False,
+            "humanSignaturePresent": False,
+            "reviewStatus": "pending",
+            "reason": (
+                "Static schema and identity validation cannot substitute for v2 provenance, "
+                "a qualifying two-reviewer receipt, or a human publication signature."
+            ),
+        },
+        "coverage": {
+            "N1": {
+                "lex": {"status": "present-raw-only", "raw": len(pool)},
+                "rc": {"status": "missing", "raw": 0},
+            },
+            "N2": {
+                "lex": {"status": "missing", "raw": 0},
+                "rc": {"status": "missing", "raw": 0},
+            },
+        },
+        "omissions": [
+            "N1 rc source is absent.",
+            "N2 lex source is absent.",
+            "N2 rc source is absent.",
+            "No v2 review receipt or human publication signature exists for these raw candidates.",
+        ],
+        "artifactsCreated": {
+            "run": False,
+            "receipt": False,
+            "convertedBank": False,
+            "candidate": False,
+            "publishedBank": False,
+        },
+    }
+    resumed = report_path.exists()
+    _ensure_json_artifact(report_path, report)
+    return {
+        "status": "ok",
+        "report": str(report_path.resolve()),
+        "reportSha256": _sha256_file(report_path),
+        "sourceSha256": source_hash,
+        "conversionSha256": conversion_hash,
+        "resumed": resumed,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = _JsonArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1046,6 +1206,11 @@ def _build_parser() -> argparse.ArgumentParser:
     rollback_parser.add_argument("--release-dir", required=True)
     rollback_parser.add_argument("--target", required=True)
     rollback_parser.add_argument("--signature", required=True)
+    audit_parser = subparsers.add_parser(
+        "audit-legacy", help="audit the tracked legacy N1 lex pool without converting it"
+    )
+    audit_parser.add_argument("--source", required=True)
+    audit_parser.add_argument("--report", required=True)
     return parser
 
 
@@ -1082,6 +1247,11 @@ def cli(argv: list[str] | None = None) -> int:
                 release_dir=Path(args.release_dir),
                 target_path=Path(args.target),
                 signature_path=Path(args.signature),
+            )
+        elif args.command == "audit-legacy":
+            result = audit_legacy(
+                source_path=Path(args.source),
+                report_path=Path(args.report),
             )
         else:
             raise PipelineError("command_invalid", f"unsupported command: {args.command}")
