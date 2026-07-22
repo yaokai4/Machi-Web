@@ -357,6 +357,60 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
         self.assertTrue(resumed["exam"]["resumed"])
         self.assertEqual(950, server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"])
 
+    def test_submit_racing_expired_member_resume_cannot_open_fresh_member_attempt(self) -> None:
+        self._credit()
+        self.conn.execute(
+            "UPDATE jlpt_exams SET is_member_only=1 WHERE id=?", (self.exam_id,)
+        )
+        self.exam = jlpt.get_exam(self.conn, self.exam_id)
+        server.activate_or_extend_membership(
+            self.conn,
+            self.user_id,
+            server.MEMBERSHIP_PLAN_KEY,
+            "test_fixture",
+        )
+        first = self._start(key="member-race-first")["exam"]
+        self.conn.execute(
+            "UPDATE user_memberships SET status='expired', current_period_end=?, "
+            "expires_at=?, updated_at=? WHERE user_id=?",
+            (
+                "2020-01-01T00:00:00+00:00",
+                "2020-01-01T00:00:00+00:00",
+                server.now_iso(),
+                self.user_id,
+            ),
+        )
+
+        original_start = jlpt.start_exam_session
+
+        def submit_then_start(connection, **kwargs):
+            connection.execute(
+                "UPDATE jlpt_exam_sessions SET status='submitted', submitted_at=? "
+                "WHERE id=? AND status='in_progress'",
+                (server.now_iso(), first["sessionId"]),
+            )
+            return original_start(connection, **kwargs)
+
+        jlpt.start_exam_session = submit_then_start
+        try:
+            raced = self._start(key="member-race-second")
+        finally:
+            jlpt.start_exam_session = original_start
+
+        self.assertEqual("member_required", raced["status"])
+        self.assertEqual(
+            950,
+            server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"],
+        )
+        rows = self.conn.execute(
+            "SELECT id, status FROM jlpt_exam_sessions WHERE user_id=? AND exam_id=?",
+            (self.user_id, self.exam_id),
+        ).fetchall()
+        self.assertEqual(
+            [(first["sessionId"], "submitted")],
+            [(r["id"], r["status"]) for r in rows],
+        )
+
     def test_insufficient_balance_leaves_no_session_or_debit(self) -> None:
         result = self._start(key="insufficient")
         self.assertEqual("insufficient", result["status"])

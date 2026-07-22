@@ -12202,6 +12202,19 @@ def start_jlpt_exam_atomic(
         return {"status": "no_questions"}
     session_id = str(started.get("sessionId") or "")
 
+    # A concurrent submit can end the session observed by the membership gate
+    # between has_resumable_exam_session() and start_exam_session().  In that
+    # interleaving start_exam_session creates a brand-new attempt.  An expired
+    # member may resume the already-paid attempt, but must never use that stale
+    # entitlement snapshot to enter a fresh member-only attempt.
+    if live_exam.get("is_member_only") and not is_member and not started.get("resumed"):
+        conn.execute(
+            "DELETE FROM jlpt_exam_sessions WHERE id=? AND user_id=? "
+            "AND status='in_progress'",
+            (session_id, user_id),
+        )
+        return {"status": "member_required"}
+
     if started.get("resumed"):
         row = conn.execute(
             "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
