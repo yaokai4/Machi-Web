@@ -47,3 +47,8 @@ kaix 2.db*
 
 # JLPT 听力音频（由 scripts/build_jlpt_audio.py 从提交的脚本重建；运行时产物，勿提交）
 media/jlpt/
+
+# jlptv2 相似度 checker 私钥与运行产物，绝不进 Git
+data/jlpt_v2_keys/
+data/jlpt_v2_runs/
+data/jlpt_v2_release/
