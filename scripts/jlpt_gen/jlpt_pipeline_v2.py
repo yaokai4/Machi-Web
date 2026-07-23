@@ -1160,6 +1160,50 @@ def _link_runs_to_release(
             _write_json(run_dir / "manifest.json", updated)
 
 
+def _parse_release_floor(values: list[str] | None) -> dict[str, int] | None:
+    """解析 --release-floor N1=600。畸形写法直接报错，不猜测意图。"""
+    if not values:
+        return None
+    parsed: dict[str, int] = {}
+    for raw in values:
+        level, separator, floor = str(raw).partition("=")
+        if not separator or not level.strip() or not floor.strip().isdigit():
+            raise PipelineError(
+                "release_floor_override_invalid", f"--release-floor 需要 LEVEL=N 形式，收到 {raw!r}"
+            )
+        parsed[level.strip().upper()] = int(floor)
+    return parsed
+
+
+def _validated_release_floor_override(
+    override: dict[str, int] | None, reason: str
+) -> dict[str, int]:
+    """校验发布下限覆盖。只允许调低、必须写理由、等级与数值必须合法。"""
+    if not override:
+        return {}
+    if not reason.strip():
+        raise PipelineError(
+            "release_floor_override_invalid", "调低发布下限必须写明理由（--override-reason）"
+        )
+    contract_floors = load_contract()["releaseGate"]["minimumApprovedUniqueStagedByLevel"]
+    for level, floor in override.items():
+        if level not in contract_floors:
+            raise PipelineError(
+                "release_floor_override_invalid",
+                f"未知等级 {level!r}，只支持 {sorted(contract_floors)}",
+            )
+        if type(floor) is not int or floor < 1:
+            raise PipelineError(
+                "release_floor_override_invalid", f"{level} 的下限必须是正整数，收到 {floor!r}"
+            )
+        if floor > contract_floors[level]:
+            raise PipelineError(
+                "release_floor_override_invalid",
+                f"{level} 的覆盖值 {floor} 高于契约下限 {contract_floors[level]}；调高请改契约",
+            )
+    return dict(override)
+
+
 def stage_release(
     *,
     release_dir: Path,
@@ -1167,9 +1211,15 @@ def stage_release(
     target_path: Path,
     similarity_evidence_path: Path | None = None,
     similarity_trusted_keys_path: Path | None = None,
+    carry_forward: bool = False,
+    release_floor_override: dict[str, int] | None = None,
+    override_reason: str = "",
 ) -> dict[str, Any]:
     if not run_dirs:
         raise PipelineError("run_invalid", "stage requires at least one reviewed run")
+    # 命令行参数先于任何 IO 校验：畸形的下限覆盖应当立刻报错，而不是等读完
+    # 所有 run、算完哈希之后才在中途炸掉。
+    _validated_release_floor_override(release_floor_override, override_reason)
     unique_by_id: dict[str, dict[str, Any]] = {}
     run_ids: list[str] = []
     run_references: dict[str, dict[str, Any]] = {}
@@ -1196,6 +1246,25 @@ def stage_release(
                     "identity_conflict",
                     f"question identity {question_id} has multiple reviewed revisions",
                 )
+    # ── 累积追加（分波次扩充题库的关键）──────────────────────────────────
+    # 默认语义是「候选即新题库全文」，后续波次只 stage 新题会把上一波的题
+    # 全部判成 removed。carry_forward 先把当前已发布 target 里的题读进来打底，
+    # 新波次在其之上叠加：同 id 且 contentHash 相同 → 保持不变；同 id 但内容
+    # 变了 → 走既有的 identity_conflict 路径 fail-closed，绝不静默覆盖已上线题。
+    carried_forward = 0
+    if carry_forward:
+        _, _, existing_by_id = _target_snapshot(target_path)
+        for question_id, record in existing_by_id.items():
+            if question_id in unique_by_id:
+                continue
+            if not isinstance(record.get("level"), str) or not record.get("contentHash"):
+                raise PipelineError(
+                    "target_invalid",
+                    f"carry-forward 要求 target 中每道题都有 level 与 contentHash：{question_id}",
+                )
+            unique_by_id[question_id] = record
+            carried_forward += 1
+
     questions = [copy.deepcopy(record) for record in unique_by_id.values()]
     questions.sort(key=lambda record: (record["level"], record["id"], record["contentHash"]))
     counts_by_level = {
@@ -1203,7 +1272,19 @@ def stage_release(
         for level in ("N1", "N2")
     }
     contract = load_contract()
-    minimums = contract["releaseGate"]["minimumApprovedUniqueStagedByLevel"]
+    minimums = dict(contract["releaseGate"]["minimumApprovedUniqueStagedByLevel"])
+    # ── 发布下限调整 ─────────────────────────────────────────────────────
+    # 契约里的 1000 是「首期目标」，先发一批小的再逐波扩充是产品决策，不是绕过
+    # 安全门。因此调整必须显式、带书面理由、并原样写进 release manifest 与
+    # diff，让 publish 的人工签名连同这个决定一起签掉——而不是悄悄改契约
+    # （改契约会让 contract_sha256 变化，令所有在途 run 与已签名 release 作废）。
+    applied_override: dict[str, Any] = {}
+    for level, floor in _validated_release_floor_override(
+        release_floor_override, override_reason
+    ).items():
+        applied_override[level] = {"contractFloor": minimums[level], "appliedFloor": floor}
+        minimums[level] = floor
+
     shortfalls = {
         level: {"minimum": minimums[level], "available": counts_by_level[level]}
         for level in ("N1", "N2")
@@ -1326,11 +1407,24 @@ def stage_release(
         },
     }
     diff_hash = _sha256_bytes(_pretty_json_bytes(diff))
+    # 这一波是「累积追加」还是「整库替换」、下限有没有被调过，都必须落在
+    # manifest 里：publish 的人工签名覆盖 candidate 与 manifest，签字的人因此
+    # 是连同这两个决定一起签的，事后可逐波审计。
+    wave_policy = {
+        "mode": "carry-forward" if carry_forward else "full-replace",
+        "carriedForwardFromTarget": carried_forward,
+        "newFromRuns": len(questions) - carried_forward,
+        "releaseFloorOverride": applied_override or None,
+        "releaseFloorOverrideReason": override_reason.strip() or None,
+    }
+    diff["wavePolicy"] = wave_policy
+    diff_hash = _sha256_bytes(_pretty_json_bytes(diff))
     manifest = {
         "releaseVersion": 2,
         "releaseId": release_id,
         "releaseNonce": release_nonce,
         "state": "pending",
+        "wavePolicy": wave_policy,
         "contract": {
             "version": contract["contractVersion"],
             "sha256": contract_sha256(),
@@ -2590,6 +2684,24 @@ def _build_parser() -> argparse.ArgumentParser:
     stage_parser.add_argument("--target", required=True)
     stage_parser.add_argument("--similarity-evidence")
     stage_parser.add_argument("--similarity-trusted-keys")
+    stage_parser.add_argument(
+        "--carry-forward",
+        action="store_true",
+        help="累积追加：先载入当前已发布 target 的题再叠加本波新题。分波次扩充题库时必须加，"
+             "否则后续波次会把上一波的题全部判成 removed。",
+    )
+    stage_parser.add_argument(
+        "--release-floor",
+        action="append",
+        default=[],
+        metavar="LEVEL=N",
+        help="按级调低本次发布下限（如 N1=600）。只能调低不能调高；必须同时给 --override-reason。",
+    )
+    stage_parser.add_argument(
+        "--override-reason",
+        default="",
+        help="调低下限的书面理由，会原样写进 release manifest 与 diff，由 publish 的人工签名一并签掉。",
+    )
     publish_parser = subparsers.add_parser("publish", help="publish a signed pending release")
     publish_parser.add_argument("--release-dir", required=True)
     publish_parser.add_argument("--target", required=True)
@@ -2641,6 +2753,9 @@ def cli(argv: list[str] | None = None) -> int:
                     if args.similarity_trusted_keys
                     else None
                 ),
+                carry_forward=bool(args.carry_forward),
+                release_floor_override=_parse_release_floor(args.release_floor),
+                override_reason=args.override_reason,
             )
         elif args.command == "publish":
             result = publish_release(
