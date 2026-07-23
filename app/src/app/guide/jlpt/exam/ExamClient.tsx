@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { GraduationCap, Loader, Lock, Timer, ArrowLeft, History, Trophy, ChevronRight, Coins, ListChecks, NotebookPen } from "lucide-react";
+import { GraduationCap, Loader, Lock, Timer, ArrowLeft, History, Trophy, ChevronRight, ChevronDown, Coins, ListChecks, NotebookPen } from "lucide-react";
 import {
   guide,
   type GuideJlptExam,
@@ -56,6 +56,9 @@ import {
 } from "./examContract";
 
 type View = "list" | "taking" | "result" | "review" | "paper";
+
+// 历史成绩 default row cap; 「查看全部」 expands to the full (filtered) list.
+const HISTORY_COLLAPSED_ROWS = 6;
 type ConfirmedStart = {
   exam: GuideJlptExam;
   preflight: GuideJlptExamPreflight;
@@ -74,6 +77,8 @@ export function ExamClient() {
   const pushToast = useToasts((s) => s.push);
 
   const [level, setLevel] = useState<string>("");
+  const [historyLevel, setHistoryLevel] = useState<string>("");
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const [view, setView] = useState<View>("list");
   const [session, setSession] = useState<GuideJlptExamStart | null>(null);
   const [result, setResult] = useState<GuideJlptExamSubmit | null>(null);
@@ -255,6 +260,22 @@ export function ExamClient() {
     );
   }
 
+  // ── 历史成绩: pure frontend grouping of the already-fetched history payload
+  // (no new endpoint). Chips only list levels that actually have records, and
+  // a vanished level (e.g. after refetch) falls back to 全部 instead of an
+  // empty list.
+  const historySessions = historyQ.data?.sessions ?? [];
+  const historyLevels = (JLPT_LEVELS as readonly string[]).filter((lv) =>
+    historySessions.some((h) => h.level === lv),
+  );
+  const activeHistoryLevel = historyLevels.includes(historyLevel) ? historyLevel : "";
+  const filteredHistory = activeHistoryLevel
+    ? historySessions.filter((h) => h.level === activeHistoryLevel)
+    : historySessions;
+  const visibleHistory = historyExpanded
+    ? filteredHistory
+    : filteredHistory.slice(0, HISTORY_COLLAPSED_ROWS);
+
   return (
     <GuideShell back={back}>
       <JlptNarrow>
@@ -334,11 +355,24 @@ export function ExamClient() {
           </section>
         )}
 
-        {historyQ.data?.sessions?.length ? (
+        {historySessions.length ? (
           <section className="mt-8">
-            <GuideSectionTitle title={t("历史成绩", "受験履歴", "Past attempts")} />
+            <GuideSectionTitle
+              title={t("历史成绩", "受験履歴", "Past attempts")}
+              subtitle={t(`共 ${historySessions.length} 次记录`, `全 ${historySessions.length} 件`, `${historySessions.length} attempts`)}
+            />
+            {historyLevels.length > 1 ? (
+              <div className="mb-1">
+                <LevelPicker
+                  value={activeHistoryLevel}
+                  onChange={setHistoryLevel}
+                  levels={["", ...historyLevels]}
+                  allLabel={t("全部", "すべて", "All")}
+                />
+              </div>
+            ) : null}
             <div className="mt-2 space-y-2">
-              {historyQ.data.sessions.slice(0, 10).map((h) => (
+              {visibleHistory.map((h) => (
                 <HistoryRow
                   key={h.sessionId}
                   t={t}
@@ -350,6 +384,21 @@ export function ExamClient() {
                 />
               ))}
             </div>
+            {filteredHistory.length > HISTORY_COLLAPSED_ROWS ? (
+              <button
+                type="button"
+                onClick={() => setHistoryExpanded((v) => !v)}
+                aria-expanded={historyExpanded}
+                className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] px-4 py-2.5 text-xs font-semibold text-[rgb(var(--kx-living-muted))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
+              >
+                <ChevronDown
+                  className={["h-3.5 w-3.5 transition-transform motion-reduce:transition-none", historyExpanded ? "rotate-180" : ""].join(" ")}
+                />
+                {historyExpanded
+                  ? t("收起", "折りたたむ", "Show less")
+                  : t(`查看全部 ${filteredHistory.length} 条`, `全 ${filteredHistory.length} 件を表示`, `View all ${filteredHistory.length}`)}
+              </button>
+            ) : null}
           </section>
         ) : null}
 
@@ -957,6 +1006,9 @@ function HistoryRow({ t, item, onOpen }: { t: Tri; item: GuideJlptExamHistoryIte
   // 全真卷显示缩放笔试分(0-120,按参考线判色);普通卷维持 0-100 百分比。
   const displayScore = item.scaled ? item.scaled.writtenTotal : item.score;
   const displayPassed = item.scaled ? item.scaled.passedWrittenReference : item.passed;
+  // 出分模式徽标: score_mode='jlpt_scaled' (或带 scaled 块的老会话) → JLPT 标准;
+  // 其余为百分制。
+  const scaledMode = item.scoreMode === "jlpt_scaled" || !!item.scaled;
   const inner = (
     <>
       <span
@@ -968,7 +1020,24 @@ function HistoryRow({ t, item, onOpen }: { t: Tri; item: GuideJlptExamHistoryIte
         {displayScore}
       </span>
       <div className="min-w-0 flex-1 text-left">
-        <p className="truncate text-sm font-semibold text-[rgb(var(--kx-living-ink))]">{item.title || item.level}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="truncate text-sm font-semibold text-[rgb(var(--kx-living-ink))]">{item.title || item.level}</p>
+          <span
+            className={[
+              "shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-bold",
+              scaledMode
+                ? "bg-[rgb(var(--kx-living-accent))]/[0.1] text-[rgb(var(--kx-living-accent))]"
+                : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))]",
+            ].join(" ")}
+            title={
+              scaledMode
+                ? t("按 JLPT 官方计分结构出缩放分", "JLPT 公式の得点区分に基づく換算採点", "Scored on the official JLPT scale structure")
+                : t("百分制计分", "100点満点の採点", "Percent-based scoring")
+            }
+          >
+            {scaledMode ? t("JLPT 标准", "JLPT 準拠", "JLPT scale") : t("百分制", "百分率", "Percent")}
+          </span>
+        </div>
         <p className="mt-0.5 text-[11px] font-medium tabular-nums text-[rgb(var(--kx-living-muted))]">
           {item.scaled ? `${item.scaled.writtenTotal}/${item.scaled.writtenMax} · ` : ""}
           {item.level} · {item.correct}/{item.total} · {item.startedAt.slice(0, 10)}

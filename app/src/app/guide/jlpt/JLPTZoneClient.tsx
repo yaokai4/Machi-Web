@@ -19,6 +19,7 @@ import {
   JlptNarrow, JlptPageSkeleton, JlptErrorCard,
   type Tri, type JlptAction,
 } from "./JlptKit";
+import { MyStudySection } from "./MyStudy";
 
 // study-plan CTA route token → concrete web path.
 const ROUTE_HREF: Record<string, string> = { guidePlan: "/guide/plan" };
@@ -128,6 +129,10 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
             <ExamCountdownBar t={t} countdown={core.examCountdown} />
           </div>
         ) : null}
+
+        {/* 我的学习 — signed-in progress snapshot (guests get a login nudge).
+            Self-contained: fetches its own data, hides itself when empty. */}
+        <MyStudySection t={t} />
 
         {/* Interactive 备考核心 entries. */}
         <section className="mt-8">

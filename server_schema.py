@@ -6134,6 +6134,25 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON apple_transaction_registry(original_transaction_id, product_id);
         """,
     ),
+    (
+        135,
+        "listings 状态流转时间列 + 热榜/推荐画像扫描索引",
+        # status_changed_at:卖家标记「已预约/已售出」是纯状态流转,PATCH 不再
+        # 刷新 updated_at(latest 排序按 updated_at 置顶,标记状态不该反而把房源
+        # 顶回列表第 1 位——见 api_update_listing),流转时刻单独记在本列。存量行
+        # 回填 = updated_at(已知的最佳近似);WHERE 空串守卫让回填天然可重入。
+        # 顺带补两条既有扫描缺的索引:热榜主道两车道候选按
+        # posts.hot_score_engaged 排序(此前无专用索引,见 explore 候选注释),
+        # 推荐画像按 follows(follower_id, created_at) 扫近期关注。三条 DDL 与
+        # UPDATE 在 SQLite/PostgreSQL 语法通用;fresh 库同样只经本迁移拿到该列
+        # (SCHEMA 不声明,ALTER 不会撞列)。
+        """
+        ALTER TABLE city_listings ADD COLUMN status_changed_at TEXT NOT NULL DEFAULT '';
+        UPDATE city_listings SET status_changed_at = updated_at WHERE status_changed_at = '';
+        CREATE INDEX IF NOT EXISTS idx_posts_hot_engaged ON posts(status, hot_score_engaged);
+        CREATE INDEX IF NOT EXISTS idx_follows_follower_created ON follows(follower_id, created_at);
+        """,
+    ),
 ]
 
 

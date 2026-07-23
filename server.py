@@ -35717,6 +35717,66 @@ class Handler(BaseHTTPRequestHandler):
         base_clauses = list(clauses)
         base_params = list(params)
 
+        # ── bbox 轻量 pins 模式(pins=1)──────────────────────────────────────
+        # 地图「搜索此区域」用:只回 {"pins":[{id,title,price,latitude,longitude,
+        # status}],"total":N} 两键轻载荷 —— iOS 正并行按这个形状接入,逐字勿动。
+        # 尊重上方全部既有筛选 clause(地域/类目/关键词/属性/价格/owner=me 私有
+        # 视图与公开状态收口);只取坐标非空且落在 bbox 内的行;LIMIT 200,
+        # 不走游标、不触发放宽/地域回退/facet。四个边界各自独立解析:畸形
+        # (非数,含 NaN/Inf)或越界(纬度超 ±90 / 经度超 ±180)的静默忽略该
+        # 参数,与本函数 limit/min_price 既有的公开端点容错口径一致。
+        if (query.get("pins") or "").strip().lower() in {"1", "true", "yes"}:
+            def _bbox_value(name: str, lo: float, hi: float) -> float | None:
+                raw = str(query.get(name) or "").strip()
+                if not raw:
+                    return None
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    return None
+                # NaN/Inf 也走这里:与 NaN 的比较恒 False → 一并忽略。
+                if not (lo <= value <= hi):
+                    return None
+                return value
+
+            pin_clauses = [*clauses, "latitude IS NOT NULL", "longitude IS NOT NULL"]
+            pin_params: list[Any] = list(params)
+            for key, column, op, lo, hi in (
+                ("min_lat", "latitude", ">=", -90.0, 90.0),
+                ("max_lat", "latitude", "<=", -90.0, 90.0),
+                ("min_lng", "longitude", ">=", -180.0, 180.0),
+                ("max_lng", "longitude", "<=", -180.0, 180.0),
+            ):
+                bound = _bbox_value(key, lo, hi)
+                if bound is not None:
+                    pin_clauses.append(f"{column} {op} ?")
+                    pin_params.append(bound)
+            pin_where = " AND ".join(pin_clauses)
+            pin_rows = conn.execute(
+                f"SELECT id, title, price, latitude, longitude, status FROM city_listings"
+                f" WHERE {pin_where} ORDER BY updated_at DESC, id DESC LIMIT 200",
+                pin_params,
+            ).fetchall()
+            pin_count = conn.execute(
+                f"SELECT COUNT(*) AS n FROM city_listings WHERE {pin_where}",
+                pin_params,
+            ).fetchone()
+            self.send_json({
+                "pins": [
+                    {
+                        "id": r["id"],
+                        "title": public_listing_title(r["title"]),
+                        "price": r["price"],
+                        "latitude": r["latitude"],
+                        "longitude": r["longitude"],
+                        "status": r["status"],
+                    }
+                    for r in pin_rows
+                ],
+                "total": int(pin_count["n"] if pin_count else 0),
+            })
+            return
+
         if cursor:
             clauses.append("(updated_at, id) < (?, ?)")
             params.extend([cursor[0], cursor[1]])
@@ -36594,7 +36654,32 @@ class Handler(BaseHTTPRequestHandler):
         if "published_at" in publication:
             allowed["published_at"] = publication["published_at"]
         if allowed:
-            allowed["updated_at"] = now_iso()
+            # 状态流转单独记账(迁移 135 的 status_changed_at):只在状态真正
+            # 变化时写。纯状态 PATCH(标记已预约/已售出/下架等)不再刷新
+            # updated_at —— latest 排序按 updated_at 置顶,卖家标记「已预约」
+            # 不该反而把房源顶回列表第 1 位。例外:从非公开状态(草稿/待审/
+            # 隐藏…)流转进公开状态(published/reserved)等于重新上架,对公众
+            # 是全新内容,照旧置顶。其它字段编辑(标题/价格/属性/媒体…,含
+            # 与状态混合的编辑)仍照旧刷新 updated_at。
+            prev_status = str(row["status"] or "")
+            status_changed = "status" in allowed and str(allowed["status"] or "") != prev_status
+            if status_changed:
+                allowed["status_changed_at"] = now_iso()
+            became_public = (
+                status_changed
+                and prev_status not in PUBLIC_LISTING_STATUSES
+                and str(allowed["status"] or "") in PUBLIC_LISTING_STATUSES
+            )
+            content_edited = (
+                media_changed
+                or "attributes" in data
+                or any(
+                    key not in ("status", "status_changed_at", "verification_status", "published_at")
+                    for key in allowed
+                )
+            )
+            if content_edited or became_public:
+                allowed["updated_at"] = now_iso()
             cols = ", ".join(f"{key} = ?" for key in allowed)
             conn.execute(f"UPDATE city_listings SET {cols} WHERE id = ?", [*allowed.values(), listing_id])
         # Favorite-watcher alerts (B6): if this edit dropped the price or took a

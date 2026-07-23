@@ -6,7 +6,8 @@ import { useMutation } from "@tanstack/react-query";
 import { Target, Loader, ArrowRight } from "lucide-react";
 import { guide, type GuideJlptQuestion, type GuideJlptPlacementResult } from "@/lib/guide";
 import { APIError, isAuthRequiredError } from "@/lib/api";
-import { useAuthPrompt, useToasts } from "@/lib/store";
+import { useAuthPrompt, useToasts, useSession } from "@/lib/store";
+import { storePlacementResult } from "../MyStudy";
 import { GuideShell, GuideSectionTitle } from "@/components/guide/GuideKit";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 import {
@@ -33,6 +34,7 @@ export function PlacementClient() {
   const t: Tri = (zh, ja, en) => (language === "ja" ? ja : language === "en" ? en : zh);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
+  const sessionUser = useSession((s) => s.user);
 
   const [phase, setPhase] = useState<Phase>("intro");
   const [questions, setQuestions] = useState<GuideJlptQuestion[]>([]);
@@ -62,6 +64,9 @@ export function PlacementClient() {
     onSuccess: (data) => {
       setResult(data);
       setPhase("result");
+      // Snapshot for the zone's 我的学习 card (no server read endpoint exists
+      // for a past placement). Submit requires auth, so the user is present.
+      if (sessionUser?.id) storePlacementResult(sessionUser.id, data);
     },
     onError: (err) => {
       if (isAuthRequiredError(err)) {
