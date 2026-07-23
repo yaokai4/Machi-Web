@@ -11583,6 +11583,86 @@ def machi_ai_suggestions(language: str) -> list[dict[str, str]]:
     return [{"id": item[0], "category": item[1], "title": item[pick]} for item in _MACHI_AI_SUGGESTIONS]
 
 
+# --- Machi AI 流式(SSE)参数与伪流式切片 --------------------------------------
+# 上游封装 seed_llm.machi_ai_chat_completion 固定 stream=False(一次性完整返回),
+# 所以流式模式统一走服务端伪流式:拿到完整答案后按 30-60 字符/片、60-90ms 节奏
+# 切片下发。好处是不同上游(乃至上游离线兜底)下客户端观感完全一致;日后上游
+# 换成真流式,只需替换生成一步,SSE 事件契约(delta*/done/error + ": ping")不变。
+MACHI_AI_STREAM_CHUNK_MIN_CHARS = 30
+MACHI_AI_STREAM_CHUNK_MAX_CHARS = 60
+MACHI_AI_STREAM_CHUNK_DELAY_RANGE = (0.06, 0.09)   # 每片间隔(秒),60-90ms
+MACHI_AI_STREAM_HEARTBEAT_SEC = 15.0               # 生成等待期 ": ping" 心跳间隔
+
+# 伪流式切片的"自然断点"字符:优先在换行/中英文标点/空格后断开,打字机观感更顺。
+_MACHI_AI_CHUNK_BREAKS = set("\n。！？!?；;：，,、. :）)】》」ー")
+
+
+def machi_ai_stream_chunks(text: str) -> list[str]:
+    """把完整答案切成 30-60 字符的伪流式切片。
+
+    硬约束:所有切片按序拼接必须逐字等于原文(与非流式答案逐字一致,客户端
+    无需任何拼接修正)。软约束:尽量在自然断点处收尾 —— 在 [min, max] 窗口内
+    从后往前找断点字符,找不到就硬切在 max。末片可以短于 min(收尾)。"""
+    text = text or ""
+    min_c, max_c = MACHI_AI_STREAM_CHUNK_MIN_CHARS, MACHI_AI_STREAM_CHUNK_MAX_CHARS
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if n - i <= max_c:
+            out.append(text[i:])
+            break
+        cut = -1
+        for j in range(i + max_c, i + min_c - 1, -1):
+            if text[j - 1] in _MACHI_AI_CHUNK_BREAKS:
+                cut = j
+                break
+        if cut < 0:
+            cut = i + max_c
+        out.append(text[i:cut])
+        i = cut
+    return out
+
+
+# 追问建议的主题词规则兜底。上游封装目前不支持让模型顺带产出结构化追问(单次
+# completion 只回答案文本,往 prompt 里塞"末尾附三条追问"会污染答案正文本身),
+# 所以按问答内容的主题词命中给出 2-3 条高质量中文追问;宁缺毋滥 —— 一个主题都
+# 没命中就返回空数组,客户端不渲染即可。规则按优先级排列,取第一个命中的主题。
+_MACHI_AI_FOLLOWUP_RULES: list[tuple[tuple[str, ...], list[str]]] = [
+    (("签证", "在留", "ビザ", "visa", "永住", "归化", "入管", "資格"),
+     ["更新在留资格需要准备哪些材料？", "在留卡丢了应该怎么补办？", "换工作后签证需要做什么手续？"]),
+    (("租房", "找房", "賃貸", "礼金", "敷金", "保证人", "保証", "房租", "退租", "初期费用"),
+     ["初期费用大概要准备多少钱？", "没有日本保证人可以租房吗？", "退租时怎样才能多退一些押金？"]),
+    (("求职", "找工作", "面试", "面接", "简历", "履歴書", "内定", "转职", "職務経歴"),
+     ["日式简历有哪些必须注意的格式？", "面试自我介绍怎么说比较加分？", "拿到内定之后还要办哪些手续？"]),
+    (("jlpt", "日语", "日本語", "语法", "单词", "听力", "阅读", "真题", "考级"),
+     ["按我现在的水平怎么制定备考计划？", "听力应该怎么练比较有效？", "考前一个月冲刺的重点是什么？"]),
+    (("年金", "纳税", "税金", "保险", "保険", "国保", "确定申告", "確定申告", "社保", "住民税"),
+     ["国民年金可以申请减免吗？", "确定申告需要准备什么材料？", "离职后保险应该怎么切换？"]),
+    (("医院", "看病", "医療", "诊所", "牙医", "体检", "药妆", "处方"),
+     ["不太会日语去医院怎么沟通？", "医疗费太高有什么补助制度吗？", "怎么找到会中文的医生？"]),
+    (("银行", "口座", "开户", "信用卡", "转账", "汇款"),
+     ["刚来日本开户选哪家银行方便？", "没有信用记录怎么申请信用卡？", "往国内汇款哪种方式手续费低？"]),
+    (("手机", "sim", "套餐", "宽带", "网络", "携帯"),
+     ["留学生办手机卡需要什么材料？", "格安 SIM 和大手套餐怎么选？", "家里拉宽带一般要等多久？"]),
+    (("搬家", "水电", "煤气", "垃圾", "住民票", "役所", "刚来日本", "初来"),
+     ["搬家后需要去役所办哪些手续？", "水电煤气怎么开通比较快？", "垃圾分类有哪些容易踩的坑？"]),
+]
+
+
+def machi_ai_followup_suggestions(user_message: str, answer: str,
+                                  language: str = "zh-CN") -> list[str]:
+    """基于本轮问答内容生成至多 3 条中文追问(规则兜底,宁缺毋滥)。
+
+    只在中文界面返回(追问文案是中文;日/英界面返回空数组而不是机翻凑数)。"""
+    if machi_ai_lang_key(language) != "zh":
+        return []
+    blob = f"{user_message or ''}\n{answer or ''}".lower()
+    for keywords, questions in _MACHI_AI_FOLLOWUP_RULES:
+        if any(k in blob for k in keywords):
+            return list(questions[:3])
+    return []
+
+
 def require_verified_membership(conn: sqlite3.Connection, user_id: str, content_type: str | None) -> None:
     """403 MEMBERSHIP_REQUIRED if the content type is gated and the user
     isn't an active verified member. Same rule for every client."""
@@ -23048,13 +23128,16 @@ class Handler(BaseHTTPRequestHandler):
             "items": [self._guide_ai_message_dto(r) for r in rows],
         })
 
-    def _guide_ai_quota_response(self, language: str, is_member: bool, *,
-                                 is_guest: bool = False,
-                                 conn: sqlite3.Connection | None = None,
-                                 subject_id: str = "") -> None:
-        # Free users learn it's a daily free cap (and may upgrade). Members are
-        # only told "that's all for today" — never the internal number. Guests
-        # are nudged to register (still no number).
+    def _guide_ai_quota_message(self, language: str, is_member: bool, *,
+                                is_guest: bool = False,
+                                conn: sqlite3.Connection | None = None,
+                                subject_id: str = "") -> str:
+        """撞墙埋点 + 撞墙文案。JSON(429 envelope)与 SSE(error 事件)两条
+        路径共用,保证流式/非流式的配额语义与埋点完全一致。
+
+        Free users learn it's a daily free cap (and may upgrade). Members are
+        only told "that's all for today" — never the internal number. Guests
+        are nudged to register (still no number)."""
         #
         # ai_quota_exceeded（契约 C-2）：撞墙即事件——「AI 次数加油包」是否为
         # 真需求以「日撞墙人次稳定 >0」为重议条件，所以除日志外还落
@@ -23094,6 +23177,14 @@ class Handler(BaseHTTPRequestHandler):
                 "本日の無料回数を使い切りました。明日また Machi AI をご利用いただけます。",
                 "You've used today's free questions. Machi AI is available again tomorrow.",
             )
+        return msg
+
+    def _guide_ai_quota_response(self, language: str, is_member: bool, *,
+                                 is_guest: bool = False,
+                                 conn: sqlite3.Connection | None = None,
+                                 subject_id: str = "") -> None:
+        msg = self._guide_ai_quota_message(language, is_member, is_guest=is_guest,
+                                           conn=conn, subject_id=subject_id)
         envelope = self._error_envelope("AI_QUOTA_EXCEEDED", msg)
         envelope["upgradeSuggested"] = not is_member
         envelope["usage"] = {
@@ -23103,16 +23194,20 @@ class Handler(BaseHTTPRequestHandler):
         }
         self.send_json(envelope, 429)
 
-    def _guide_ai_member_ability_response(self, language: str, ability: dict[str, Any]) -> None:
-        """403 upgrade prompt when a non-member requests a members-only ability.
-        No quota is touched and no upstream call is made."""
+    def _guide_ai_member_ability_message(self, language: str, ability: dict[str, Any]) -> str:
+        """会员专属能力的升级提示文案(JSON 403 与 SSE error 事件共用)。"""
         title = ability["title"][{"ja": 1, "en": 2}.get(machi_ai_lang_key(language), 0)]
-        msg = machi_ai_text(
+        return machi_ai_text(
             language,
             f"「{title}」是 Machi 会员专属能力。开通会员即可使用，还包含更高每日额度与 Pro 深度模型。",
             f"「{title}」は Machi メンバー限定機能です。メンバーになると利用でき、1日の上限アップと Pro モデルも含まれます。",
             f"“{title}” is a Machi members-only ability. Become a member to use it, plus a higher daily limit and the Pro model.",
         )
+
+    def _guide_ai_member_ability_response(self, language: str, ability: dict[str, Any]) -> None:
+        """403 upgrade prompt when a non-member requests a members-only ability.
+        No quota is touched and no upstream call is made."""
+        msg = self._guide_ai_member_ability_message(language, ability)
         envelope = self._error_envelope("AI_MEMBER_ABILITY_REQUIRED", msg)
         envelope["upgradeSuggested"] = True
         envelope["usage"] = {"membershipActive": False, "remainingFreeUses": None, "upgradeSuggested": True}
@@ -23184,6 +23279,136 @@ class Handler(BaseHTTPRequestHandler):
             (prompt, completion, now_iso(), user_id, usage_date),
         )
 
+    # --- Machi AI 流式(SSE)管道 ---------------------------------------------
+    # 契约(iOS 并行接入):POST /api/guide/ai/chat 带 "stream": true 时响应为
+    # 200 text/event-stream,事件序列:
+    #   data: {"type":"delta","text":"..."}        (若干条,拼接后逐字等于完整答案)
+    #   data: {"type":"done","messageId":"...","conversationId":"...",
+    #          "createdAt":"...","sources":[...],"suggestions":["...","..."],
+    #          "quota":{membershipActive,remainingFreeUses,upgradeSuggested}}
+    # 出错(配额/能力/上游不可用等)时:
+    #   data: {"type":"error","code":"...","message":"..."}   然后关闭连接。
+    # 生成等待期每 MACHI_AI_STREAM_HEARTBEAT_SEC 秒发 ": ping" 注释行心跳。
+    # 不带 stream 的请求走原 JSON 路径,行为完全不变。
+
+    def _guide_ai_sse_begin(self) -> None:
+        """Open the SSE response (status line + headers) exactly once."""
+        if getattr(self, "_guide_ai_sse_started", False):
+            return
+        self._guide_ai_sse_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        # 有限流:done/error 之后即关闭连接(无 Content-Length,靠关闭定界)。
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")  # nginx 等反代:禁止缓冲本流
+        self.send_header("X-Machi-Version", "1.0")
+        self.send_header("X-KaiX-Version", "1.0")
+        self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
+        self.close_connection = True
+        # 立即发一行 SSE 注释:客户端(及中间层)第一时间看到流已建立。
+        self._guide_ai_sse_write(b": stream-open\n\n")
+
+    def _guide_ai_sse_write(self, payload: bytes) -> bool:
+        """Write raw SSE bytes. Returns False once the client is gone — and
+        never raises: the caller's pipeline must keep running (落库/计次/退款)
+        regardless of the socket's fate."""
+        if getattr(self, "_guide_ai_sse_client_gone", False):
+            return False
+        try:
+            self.wfile.write(payload)
+            self.wfile.flush()
+            return True
+        except Exception:
+            self._guide_ai_sse_client_gone = True
+            return False
+
+    def _guide_ai_sse_event(self, obj: dict[str, Any]) -> bool:
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        return self._guide_ai_sse_write(b"data: " + data + b"\n\n")
+
+    def _guide_ai_sse_error(self, code: str, message: str) -> None:
+        """Emit a terminal SSE error event (opening the stream first if the
+        failure happened before any bytes went out)."""
+        self._guide_ai_sse_begin()
+        self._guide_ai_sse_event({"type": "error", "code": code, "message": message})
+
+    def _guide_ai_stream_generate(self, messages: list[dict[str, str]],
+                                  chat_model: str, thinking: bool) -> dict[str, Any] | None:
+        """Run the upstream completion for a streaming request.
+
+        先开 SSE 流再生成:头部立刻可见;生成跑在工作线程里,本线程负责心跳
+        (静默每 15s 一行 ": ping" 注释,防超时/NAT 断链)。SQLite 下等待期间
+        释放全局写锁(_DBLockReleased),不让一次慢 LLM 调用挡住其它写请求。
+        返回 completion dict 或 None(与非流式路径的语义完全一致)。"""
+        self._guide_ai_sse_begin()
+        box: dict[str, Any] = {}
+        done = threading.Event()
+
+        def _worker() -> None:
+            try:
+                box["completion"] = seed_llm.machi_ai_chat_completion(
+                    messages,
+                    model=chat_model,
+                    thinking=thinking,
+                    max_tokens=1600,
+                    timeout=MACHI_AI_TIMEOUT_SEC,
+                )
+            except Exception:
+                box["completion"] = None
+            finally:
+                done.set()
+
+        # 硬性等待上限:上游封装自身有 timeout+两次一次性重试,这里的兜底上限
+        # 只防"上游卡死不返回"把 handler 线程钉死;超限按 AI_UNAVAILABLE 处理
+        # (调用方会退还额度),孤儿工作线程随 urllib 超时自行消亡。
+        deadline = time.monotonic() + MACHI_AI_TIMEOUT_SEC * 2 + 15
+        worker = threading.Thread(target=_worker, name="machi-ai-stream-llm", daemon=True)
+        with _DBLockReleased():
+            worker.start()
+            while not done.wait(timeout=MACHI_AI_STREAM_HEARTBEAT_SEC):
+                if time.monotonic() >= deadline:
+                    break
+                # SSE 注释行:任何标准解析器都会忽略,仅用于保活。客户端断开也
+                # 不中止等待 —— 中断语义见 _guide_ai_stream_finish 的注释。
+                self._guide_ai_sse_write(b": ping\n\n")
+        return box.get("completion")
+
+    def _guide_ai_stream_finish(self, conn: sqlite3.Connection, *, message: str,
+                                language: str, assistant_content: str,
+                                assistant_msg_id: str, assistant_now: str,
+                                conv_id: str, client_sources: list[dict[str, Any]],
+                                quota_dto: dict[str, Any]) -> None:
+        """Emit the pseudo-stream delta/done tail of a streaming chat.
+
+        落库/计次在调用前已全部完成,并在此先显式 commit 再开始发 delta:
+        流式中断(客户端断开)时,已生成的问答仍照常保留并照常计次 —— 上游
+        成本已经真实发生、答案已完整生成,与非流式"响应体没送达但服务端工作
+        已完成"的语义完全一致;绝不能让 socket 写失败触发连接包装层的
+        rollback 把已计费的回答吐回去(SQLite autocommit 本就即时持久,这个
+        commit 是给 Postgres 连接包装器的;SQLite 上是无害 no-op)。"""
+        conn.commit()
+        lo, hi = MACHI_AI_STREAM_CHUNK_DELAY_RANGE
+        # 发送节奏期间释放全局写锁(SQLite):切片+间隔可达数秒,不该挡写。
+        with _DBLockReleased():
+            for chunk in machi_ai_stream_chunks(assistant_content):
+                if not self._guide_ai_sse_event({"type": "delta", "text": chunk}):
+                    return  # 客户端已断开;数据已持久化,直接收尾
+                if hi > 0:
+                    time.sleep(random.uniform(lo, hi))
+            self._guide_ai_sse_event({
+                "type": "done",
+                "messageId": assistant_msg_id,
+                "conversationId": conv_id,
+                "createdAt": assistant_now,
+                "sources": client_sources,
+                "suggestions": machi_ai_followup_suggestions(message, assistant_content, language),
+                "quota": quota_dto,
+            })
+
     def api_guide_ai_chat(self, conn: sqlite3.Connection) -> None:
         # Signed-out taster: a stable client UUID in X-Machi-Guest-Id buys the
         # (tiny) guest daily quota; without the header the original 401 stands.
@@ -23205,21 +23430,28 @@ class Handler(BaseHTTPRequestHandler):
         # The usage ledger / conversation owner key: real user id or guest hash.
         subject_id = user["id"] if user else guest_key
         body = self.read_json()
+        # 可选流式模式(SSE):body.stream == true 时改走事件流响应(契约见上方
+        # _guide_ai_sse_begin 一带的注释),错误也以 error 事件形式送达。注意:
+        # 鉴权失败/游客限流/禁言发生在读 body 之前,无从得知 stream 意图,仍以
+        # 普通 JSON 状态码返回 —— 客户端以响应 Content-Type 是否为
+        # text/event-stream 区分两种响应。不带 stream 的请求行为完全不变。
+        raw_stream = body.get("stream")
+        stream_mode = raw_stream is True or str(raw_stream or "").strip().lower() in ("1", "true", "yes")
         country = (str(body.get("country") or "").strip().lower()) or GUIDE_DEFAULT_COUNTRY
         country = _normalize_country_code(country) or GUIDE_DEFAULT_COUNTRY
         language = (str(body.get("language") or "zh-CN").strip()) or "zh-CN"
         message = str(body.get("message") or "").strip()
         if not message:
-            return self.send_error_json(
-                machi_ai_text(language, "请输入你的问题。", "質問を入力してください。", "Please enter your question."),
-                400, "invalid_message",
-            )
+            msg = machi_ai_text(language, "请输入你的问题。", "質問を入力してください。", "Please enter your question.")
+            if stream_mode:
+                return self._guide_ai_sse_error("invalid_message", msg)
+            return self.send_error_json(msg, 400, "invalid_message")
         if len(message) > MACHI_AI_MAX_INPUT_CHARS:
-            return self.send_error_json(
-                machi_ai_text(language, "消息太长了，请精简后再发送。", "メッセージが長すぎます。短くしてください。",
-                              "Your message is too long — please shorten it."),
-                400, "invalid_message",
-            )
+            msg = machi_ai_text(language, "消息太长了，请精简后再发送。", "メッセージが長すぎます。短くしてください。",
+                                "Your message is too long — please shorten it.")
+            if stream_mode:
+                return self._guide_ai_sse_error("invalid_message", msg)
+            return self.send_error_json(msg, 400, "invalid_message")
 
         usage_date = machi_ai_usage_date()
         is_member = bool(user) and has_active_membership(conn, user["id"])
@@ -23230,12 +23462,21 @@ class Handler(BaseHTTPRequestHandler):
         # quota is touched or upstream call is made.
         ability = machi_ai_ability(body.get("ability"))
         if ability and ability["member_only"] and not is_member:
+            if stream_mode:
+                return self._guide_ai_sse_error(
+                    "AI_MEMBER_ABILITY_REQUIRED",
+                    self._guide_ai_member_ability_message(language, ability))
             return self._guide_ai_member_ability_response(language, ability)
         # Cheap, non-authoritative fast path: reject an obviously over-quota
         # caller before doing any retrieval work. This read alone is racy (N
         # concurrent requests all see the same stale count), so the real gate is
         # the atomic reservation just before the upstream call below.
         if machi_ai_usage_count(conn, subject_id, usage_date) >= limit:
+            if stream_mode:
+                return self._guide_ai_sse_error(
+                    "AI_QUOTA_EXCEEDED",
+                    self._guide_ai_quota_message(language, is_member, is_guest=user is None,
+                                                 conn=conn, subject_id=subject_id))
             return self._guide_ai_quota_response(language, is_member, is_guest=user is None,
                                                  conn=conn, subject_id=subject_id)
 
@@ -23250,10 +23491,10 @@ class Handler(BaseHTTPRequestHandler):
                 (conv_id, subject_id),
             ).fetchone()
             if not conv_row:
-                return self.send_error_json(
-                    machi_ai_text(language, "对话不存在或已删除。", "会話が見つかりません。", "Conversation not found."),
-                    404, "not_found",
-                )
+                msg = machi_ai_text(language, "对话不存在或已删除。", "会話が見つかりません。", "Conversation not found.")
+                if stream_mode:
+                    return self._guide_ai_sse_error("not_found", msg)
+                return self.send_error_json(msg, 404, "not_found")
 
         history: list[dict[str, Any]] = []
         if conv_row is not None:
@@ -23287,6 +23528,11 @@ class Handler(BaseHTTPRequestHandler):
         reserved = self._machi_ai_reserve_usage(conn, subject_id, usage_date, is_member)
         if reserved > limit:
             self._machi_ai_refund_usage(conn, subject_id, usage_date, is_member)
+            if stream_mode:
+                return self._guide_ai_sse_error(
+                    "AI_QUOTA_EXCEEDED",
+                    self._guide_ai_quota_message(language, is_member, is_guest=user is None,
+                                                 conn=conn, subject_id=subject_id))
             return self._guide_ai_quota_response(language, is_member, is_guest=user is None,
                                                  conn=conn, subject_id=subject_id)
         completion = None
@@ -23298,23 +23544,28 @@ class Handler(BaseHTTPRequestHandler):
         # 保护连接池不被慢 AI 请求耗尽(见 _MACHI_AI_INFLIGHT 定义处注释)。
         if not _MACHI_AI_INFLIGHT.acquire(blocking=False):
             self._machi_ai_refund_usage(conn, subject_id, usage_date, is_member)
-            return self.send_json(
-                self._error_envelope("AI_BUSY", machi_ai_text(
-                    language,
-                    "Machi AI 正忙，请稍后再试。",
-                    "Machi AI が混み合っています。しばらくしてから再度お試しください。",
-                    "Machi AI is busy right now. Please try again shortly.",
-                )),
-                503,
+            busy_msg = machi_ai_text(
+                language,
+                "Machi AI 正忙，请稍后再试。",
+                "Machi AI が混み合っています。しばらくしてから再度お試しください。",
+                "Machi AI is busy right now. Please try again shortly.",
             )
+            if stream_mode:
+                return self._guide_ai_sse_error("AI_BUSY", busy_msg)
+            return self.send_json(self._error_envelope("AI_BUSY", busy_msg), 503)
         try:
-            completion = seed_llm.machi_ai_chat_completion(
-                messages,
-                model=chat_model,
-                thinking=thinking,
-                max_tokens=1600,
-                timeout=MACHI_AI_TIMEOUT_SEC,
-            )
+            if stream_mode:
+                # 流式:先开 SSE 流(头部立刻可见),生成期间发心跳;生成本身
+                # 仍是同一个上游封装、同样的参数 —— 与非流式完全一致。
+                completion = self._guide_ai_stream_generate(messages, chat_model, thinking)
+            else:
+                completion = seed_llm.machi_ai_chat_completion(
+                    messages,
+                    model=chat_model,
+                    thinking=thinking,
+                    max_tokens=1600,
+                    timeout=MACHI_AI_TIMEOUT_SEC,
+                )
         except Exception:
             # Never surface the provider's raw error — degrade to "unavailable".
             completion = None
@@ -23324,15 +23575,15 @@ class Handler(BaseHTTPRequestHandler):
             # No answer was produced — refund the reserved slot so a provider
             # failure never costs the user a quota slot.
             self._machi_ai_refund_usage(conn, subject_id, usage_date, is_member)
-            return self.send_json(
-                self._error_envelope("AI_UNAVAILABLE", machi_ai_text(
-                    language,
-                    "Machi AI 暂时无法回答，请稍后再试。",
-                    "Machi AI は現在応答できません。しばらくしてから再度お試しください。",
-                    "Machi AI is temporarily unavailable. Please try again shortly.",
-                )),
-                503,
+            unavailable_msg = machi_ai_text(
+                language,
+                "Machi AI 暂时无法回答，请稍后再试。",
+                "Machi AI は現在応答できません。しばらくしてから再度お試しください。",
+                "Machi AI is temporarily unavailable. Please try again shortly.",
             )
+            if stream_mode:
+                return self._guide_ai_sse_error("AI_UNAVAILABLE", unavailable_msg)
+            return self.send_json(self._error_envelope("AI_UNAVAILABLE", unavailable_msg), 503)
 
         assistant_content = str(completion.get("content") or "").strip()
         usage = completion.get("usage") or {}
@@ -23401,6 +23652,20 @@ class Handler(BaseHTTPRequestHandler):
         self._machi_ai_record_usage_tokens(conn, subject_id, usage_date, usage)
 
         remaining = None if is_member else max(0, limit - reserved)
+        quota_dto = {
+            "membershipActive": is_member,
+            "remainingFreeUses": remaining,
+            "upgradeSuggested": (not is_member) and remaining == 0,
+        }
+        if stream_mode:
+            # 落库已在上方完成(与非流式共用同一段代码);这里只负责按伪流式
+            # 节奏吐 delta,并以 done 事件收尾(含追问建议与配额)。
+            return self._guide_ai_stream_finish(
+                conn, message=message, language=language,
+                assistant_content=assistant_content,
+                assistant_msg_id=assistant_msg_id, assistant_now=assistant_now,
+                conv_id=conv_id, client_sources=client_sources, quota_dto=quota_dto,
+            )
         self.send_json({
             "status": "ok",
             "conversationId": conv_id,
@@ -23411,11 +23676,7 @@ class Handler(BaseHTTPRequestHandler):
                 "createdAt": assistant_now,
                 "sources": client_sources,
             },
-            "usage": {
-                "membershipActive": is_member,
-                "remainingFreeUses": remaining,
-                "upgradeSuggested": (not is_member) and remaining == 0,
-            },
+            "usage": quota_dto,
         })
 
     def api_guide_ai_conversation_delete(self, conn: sqlite3.Connection, conversation_id: str) -> None:
