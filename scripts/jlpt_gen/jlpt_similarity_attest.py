@@ -360,6 +360,10 @@ def cmd_attest(args: argparse.Namespace) -> dict[str, Any]:
             "kind": "officialCorpus",
             "checkerVersion": _CHECKER_VERSION,
             "corpusSha256": corpus_hash,
+            # 契约把这一档叫 officialCorpus，但真正拿来比对的是哪份语料由操作者
+            # 决定。必须原样写进 receipt，否则日后会被误读成「已对官方真题查重」——
+            # 而 Machi 依合规红线本就不持有官方真题原文。
+            "corpusDescription": args.corpus_description,
             "questionSetSha256": question_set_hash,
             "contractSha256": contract_sha256(),
             "checkedAt": _iso(checked_at),
@@ -447,6 +451,11 @@ def main(argv: list[str] | None = None) -> int:
     attest = sub.add_parser("attest", help="真实执行相似度检查并签发证据")
     attest.add_argument("--run-dir", action="append", required=True)
     attest.add_argument("--official-corpus", required=True)
+    attest.add_argument(
+        "--corpus-description",
+        required=True,
+        help="这份语料到底是什么，会原样写进 receipt。不得含糊其辞：若不是官方真题就明说。",
+    )
     attest.add_argument("--keys-dir", required=True)
     attest.add_argument("--out-dir", required=True)
     attest.add_argument("--embedding-key-id", default="machi-embedding-checker-1")

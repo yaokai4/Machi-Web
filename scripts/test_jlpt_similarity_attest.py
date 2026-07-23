@@ -106,6 +106,7 @@ class SimilarityAttestTests(unittest.TestCase):
                 sys.executable, str(_ATTEST), "attest",
                 "--run-dir", str(self.run_dir),
                 "--official-corpus", str(corpus or self.corpus),
+                "--corpus-description", "测试用合成语料，不含官方真题原文",
                 "--keys-dir", str(self.keys),
                 "--out-dir", str(self.out),
             ],
@@ -139,6 +140,13 @@ class SimilarityAttestTests(unittest.TestCase):
         embedding = json.loads((self.out / "embedding_receipt.json").read_text(encoding="utf-8"))
         self.assertEqual("local-deterministic", embedding["provider"])
         self.assertIn("冒充", embedding["methodNote"])
+
+    def test_receipt_records_what_the_corpus_actually_is(self) -> None:
+        # 契约字段叫 officialCorpus，但比对的到底是哪份语料必须写清楚，
+        # 否则日后会被误读成「已对官方真题查重」。
+        self.assertEqual(0, self._attest().returncode)
+        receipt = json.loads((self.out / "official_corpus_receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual("测试用合成语料，不含官方真题原文", receipt["corpusDescription"])
 
     # ── fail-closed ──────────────────────────────────────────────────────
     def test_missing_official_corpus_refuses_to_sign(self) -> None:
