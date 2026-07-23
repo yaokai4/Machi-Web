@@ -12,11 +12,11 @@ import {
   ProductCard,
   useGuideCountry,
 } from "@/components/guide/GuideKit";
-import { InlineLoading, ErrorState } from "@/components/design/States";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 import { guideUi } from "@/lib/guide-ui";
 import {
   JlptHero, JlptActionGrid, JlptLevelLadder, ExamCountdownBar, JlptDisclaimer,
+  JlptNarrow, JlptPageSkeleton, JlptErrorCard,
   type Tri, type JlptAction,
 } from "./JlptKit";
 
@@ -54,14 +54,23 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
   if (zone.isLoading) {
     return (
       <GuideShell back={{ href: "/guide", label: copy.back }}>
-        <InlineLoading />
+        <JlptNarrow>
+          <JlptPageSkeleton t={t} variant="zone" />
+        </JlptNarrow>
       </GuideShell>
     );
   }
   if (zone.isError || !zone.data) {
     return (
       <GuideShell back={{ href: "/guide", label: copy.back }}>
-        <ErrorState />
+        <JlptNarrow>
+          <JlptErrorCard
+            t={t}
+            onRetry={() => zone.refetch()}
+            retrying={zone.isFetching}
+            title={t("专区加载失败", "読み込みに失敗しました", "Couldn't load the JLPT hub")}
+          />
+        </JlptNarrow>
       </GuideShell>
     );
   }
@@ -111,7 +120,7 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
 
   return (
     <GuideShell back={{ href: "/guide", label: copy.back }}>
-      <div className="mx-auto w-full max-w-3xl px-4 pb-16 sm:px-5">
+      <JlptNarrow>
         <JlptHero t={t} title={d.hero?.title} subtitle={d.hero?.subtitle} streak={core?.streak} />
 
         {core?.examCountdown?.examDate ? (
@@ -121,26 +130,35 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
         ) : null}
 
         {/* Interactive 备考核心 entries. */}
-        <section className="mt-7">
+        <section className="mt-8">
           <GuideSectionTitle
             title={t("练起来", "はじめる", "Start studying")}
             subtitle={t("定级 · 刷题 · 背单词 · 模考,一站式备考", "レベル判定・演習・単語・模試", "Placement · drills · vocab · mocks")}
           />
           <JlptActionGrid t={t} actions={actions} />
-          <div className="mt-3 flex flex-wrap gap-2">
+          {/* Companion tools as thumb-sized tiles (not tiny pills). */}
+          <div className="mt-3 grid grid-cols-2 gap-3">
             <Link
               href="/guide/jlpt/review"
-              className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-3.5 py-2 text-xs font-bold text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
+              className="group flex items-center gap-3 rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 transition hover:border-[rgb(var(--kx-living-accent))]/30"
             >
-              <NotebookPen className="h-3.5 w-3.5" />
-              {t("错题本", "間違いノート", "Review book")}
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[rgb(var(--kx-living-accent))]/[0.09] text-[rgb(var(--kx-living-accent))]">
+                <NotebookPen className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 text-[13px] font-bold text-[rgb(var(--kx-living-ink))] group-hover:text-[rgb(var(--kx-living-accent))]">
+                {t("错题本", "間違いノート", "Review book")}
+              </span>
             </Link>
             <Link
               href="/guide/jlpt/exam-dates"
-              className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-3.5 py-2 text-xs font-bold text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
+              className="group flex items-center gap-3 rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 transition hover:border-[rgb(var(--kx-living-accent))]/30"
             >
-              <CalendarDays className="h-3.5 w-3.5" />
-              {t("考试日历", "試験日程", "Exam dates")}
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[rgb(var(--kx-living-accent))]/[0.09] text-[rgb(var(--kx-living-accent))]">
+                <CalendarDays className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 text-[13px] font-bold text-[rgb(var(--kx-living-ink))] group-hover:text-[rgb(var(--kx-living-accent))]">
+                {t("考试日历", "試験日程", "Exam dates")}
+              </span>
             </Link>
           </div>
         </section>
@@ -148,44 +166,33 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
         {d.studyPlan?.title ? (
           <Link
             href={planHref}
-            className="group mt-4 flex items-center justify-between gap-3 rounded-2xl border border-[rgb(var(--kx-living-accent))]/25 bg-gradient-to-r from-[rgb(var(--kx-living-accent))]/[0.1] to-[rgb(var(--kx-living-accent))]/[0.04] px-4 py-4 transition hover:border-[rgb(var(--kx-living-accent))]/45"
+            className="group mt-4 flex items-center justify-between gap-3 rounded-[20px] border border-[rgb(var(--kx-living-accent))]/25 bg-[rgb(var(--kx-living-accent))]/[0.06] px-4 py-4 transition hover:border-[rgb(var(--kx-living-accent))]/45 hover:bg-[rgb(var(--kx-living-accent))]/[0.09]"
           >
             <div className="min-w-0">
-              <p className="text-sm font-black text-[rgb(var(--kx-living-accent))]">{d.studyPlan.title}</p>
+              <p className="text-sm font-bold text-[rgb(var(--kx-living-accent))]">{d.studyPlan.title}</p>
               {d.studyPlan.subtitle ? (
-                <p className="mt-0.5 text-xs font-medium text-[rgb(var(--kx-living-muted))]">{d.studyPlan.subtitle}</p>
+                <p className="mt-0.5 text-xs text-[rgb(var(--kx-living-muted))]">{d.studyPlan.subtitle}</p>
               ) : null}
             </div>
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-white transition group-hover:translate-x-0.5">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))] transition group-hover:translate-x-0.5">
               <ArrowRight className="h-4 w-4" />
             </span>
           </Link>
         ) : null}
 
         {d.levels && d.levels.length > 0 ? (
-          <section className="mt-8">
+          <section className="mt-9">
             <GuideSectionTitle
               title="N5 – N1"
-              subtitle={t("选择你的目标等级", "目標レベルを選ぶ", "Pick your target level")}
+              subtitle={t("选择目标等级,点开看合格线与题型构成", "目標レベルを選んで、合格ラインと構成を見る", "Pick a level — pass lines & structure inside")}
             />
+            {/* Each ladder row links to its W2-3 static intro page. */}
             <JlptLevelLadder t={t} levels={d.levels} />
-            {/* W2-3: static per-level intro pages (合格线/题型构成/词汇量/FAQ). */}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {(["n1", "n2", "n3", "n4", "n5"] as const).map((lv) => (
-                <Link
-                  key={lv}
-                  href={`/guide/jlpt/levels/${lv}`}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-3.5 py-2 text-xs font-bold text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
-                >
-                  {t(`${lv.toUpperCase()} 等级介绍`, `${lv.toUpperCase()} とは`, `About ${lv.toUpperCase()}`)}
-                </Link>
-              ))}
-            </div>
           </section>
         ) : null}
 
         {d.resources && d.resources.length > 0 ? (
-          <section className="mt-8">
+          <section className="mt-9">
             <GuideSectionTitle title={t("资料与模拟题", "資料・模擬問題", "Resources & mock tests")} />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {d.resources.map((p) => (
@@ -196,7 +203,7 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
         ) : null}
 
         {d.articles && d.articles.length > 0 ? (
-          <section className="mt-8">
+          <section className="mt-9">
             <GuideSectionTitle title={t("备考路线与方法", "学習ロードマップ", "Roadmaps & methods")} />
             <div className="space-y-3">
               {d.articles.map((a) => (
@@ -207,21 +214,21 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
         ) : null}
 
         {d.faq && d.faq.length > 0 ? (
-          <section className="mt-8">
+          <section className="mt-9">
             <GuideSectionTitle title={t("常见问题", "よくある質問", "FAQ")} />
             <div className="space-y-2.5">
               {d.faq.map((f) => (
                 <details
                   key={f.id}
-                  className="group rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 transition hover:border-[rgb(var(--kx-living-accent))]/25"
+                  className="group rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 transition hover:border-[rgb(var(--kx-living-accent))]/25"
                 >
-                  <summary className="flex cursor-pointer items-center justify-between gap-3 text-sm font-bold text-[rgb(var(--kx-living-ink))] [&::-webkit-details-marker]:hidden">
+                  <summary className="flex cursor-pointer items-center justify-between gap-3 text-sm font-semibold text-[rgb(var(--kx-living-ink))] [&::-webkit-details-marker]:hidden">
                     {f.question}
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] transition group-open:rotate-45">
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] transition group-open:rotate-45 motion-reduce:transition-none">
                       <span className="text-base leading-none">+</span>
                     </span>
                   </summary>
-                  <p className="mt-2.5 text-[13px] font-medium leading-relaxed text-[rgb(var(--kx-living-muted))]">{f.answer}</p>
+                  <p className="mt-2.5 text-[13px] leading-relaxed text-[rgb(var(--kx-living-muted))]">{f.answer}</p>
                 </details>
               ))}
             </div>
@@ -229,7 +236,7 @@ export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone })
         ) : null}
 
         <JlptDisclaimer t={t} note={d.disclaimer} />
-      </div>
+      </JlptNarrow>
     </GuideShell>
   );
 }

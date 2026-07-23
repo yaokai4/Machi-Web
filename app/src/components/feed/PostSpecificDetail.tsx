@@ -151,7 +151,7 @@ export function PostSpecificDetailSection({ post }: { post: KXPost }) {
               disabled={joining || (full && !joined)}
               className={
                 "inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-bold transition disabled:opacity-60 " +
-                (joined ? "bg-kx-soft text-kx-text hover:bg-kx-stroke/40" : "bg-kx-accent text-white hover:opacity-95")
+                (joined ? "bg-kx-soft text-kx-text hover:bg-kx-stroke/40" : "bg-kx-accent text-kx-onAccent hover:brightness-110")
               }
             >
               {joined ? (
@@ -171,7 +171,7 @@ export function PostSpecificDetailSection({ post }: { post: KXPost }) {
             type="button"
             onClick={openDm}
             disabled={openingDm}
-            className="flex-1 inline-flex items-center justify-center gap-1.5 h-9 rounded-full bg-kx-accent text-white text-sm font-bold hover:opacity-95 disabled:opacity-60"
+            className="flex-1 inline-flex items-center justify-center gap-1.5 h-9 rounded-full bg-kx-accent text-kx-onAccent text-sm font-bold hover:brightness-110 disabled:opacity-60"
           >
             <MessageSquare className="w-4 h-4" />
             {openingDm
@@ -474,13 +474,16 @@ function priceLabel(post: KXPost): string {
 function statusBadge(post: KXPost, locale: Locale): { label: string; tint: string } | null {
   const status = (post.attributes?.status as string | undefined) || "";
   if (!status) return null;
+  // Three token tiers only (mirrors the card chips): accent for "live",
+  // --kx-heat for "attention", neutral soft for "done". Dark mode resolves
+  // through the tokens — no per-colour dark: patches.
   const map: Record<string, { label: string; tint: string }> = {
-    available: { label: localize(locale, "可售", "可售", "Available", "販売中"), tint: "text-emerald-700 bg-emerald-100 dark:text-emerald-300 dark:bg-emerald-500/15" },
-    reserved: { label: localize(locale, "已预约", "已預約", "Reserved", "予約済み"), tint: "text-orange-700 bg-orange-100 dark:text-orange-300 dark:bg-orange-500/15" },
-    sold: { label: localize(locale, "已售", "已售", "Sold", "売却済み"), tint: "text-slate-600 bg-slate-100 dark:text-slate-300 dark:bg-white/10" },
-    rented: { label: localize(locale, "已出租", "已出租", "Rented", "契約済み"), tint: "text-slate-600 bg-slate-100 dark:text-slate-300 dark:bg-white/10" },
-    under_review: { label: localize(locale, "待审核", "待審核", "Under review", "審査中"), tint: "text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-500/15" },
-    active: { label: localize(locale, "公开", "公開", "Public", "公開中"), tint: "text-kx-accent bg-kx-accent/15" },
+    available: { label: localize(locale, "可售", "可售", "Available", "販売中"), tint: "text-kx-accent bg-kx-accentSoft/80 ring-1 ring-inset ring-kx-accent/15" },
+    reserved: { label: localize(locale, "已预约", "已預約", "Reserved", "予約済み"), tint: "text-kx-heat bg-kx-heat/10 ring-1 ring-inset ring-kx-heat/20" },
+    sold: { label: localize(locale, "已售", "已售", "Sold", "売却済み"), tint: "text-kx-subtle bg-kx-soft ring-1 ring-inset ring-kx-stroke/50" },
+    rented: { label: localize(locale, "已出租", "已出租", "Rented", "契約済み"), tint: "text-kx-subtle bg-kx-soft ring-1 ring-inset ring-kx-stroke/50" },
+    under_review: { label: localize(locale, "待审核", "待審核", "Under review", "審査中"), tint: "text-kx-heat bg-kx-heat/10 ring-1 ring-inset ring-kx-heat/20" },
+    active: { label: localize(locale, "公开", "公開", "Public", "公開中"), tint: "text-kx-accent bg-kx-accentSoft/80 ring-1 ring-inset ring-kx-accent/15" },
   };
   return map[status] || null;
 }

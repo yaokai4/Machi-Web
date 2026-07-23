@@ -9,7 +9,8 @@ import { api, APIError, isAuthRequiredError, isUploadImageFile } from "@/lib/api
 import type { KXPost, KXUser, ProfileSegment, KXComment } from "@/lib/types";
 import { Avatar, OfficialBadge, OfficialPill, VerifiedBadge } from "@/components/design/Avatar";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
-import { EmptyState, ErrorState, PostSkeleton } from "@/components/design/States";
+import { EmptyState, ErrorState } from "@/components/design/States";
+import { FeedSkeletonList } from "@/components/feed/FeedSkeleton";
 import { PostCard } from "@/components/feed/PostCard";
 import { Dialog, ConfirmDialog } from "@/components/design/Dialog";
 import { NavTabs } from "@/components/design/NavTabs";
@@ -248,8 +249,13 @@ function safeImageUrl(raw?: string | null): string | null {
   return url;
 }
 
-const COVER_FALLBACK = "linear-gradient(140deg, rgb(var(--kx-accent) / 0.18), rgb(var(--kx-heat) / 0.15) 60%, rgb(var(--kx-repost) / 0.12))";
-const DRAFT_COVER_FALLBACK = "linear-gradient(140deg, rgb(var(--kx-accent) / 0.16), rgb(var(--kx-heat) / 0.12))";
+// Quiet 墨绿-family cover washes (the old accent+heat+repost tri-colour
+// gradient fought the calm off-white + ink-green page language).
+const COVER_FALLBACK = "linear-gradient(150deg, rgb(var(--kx-accent) / 0.2), rgb(var(--kx-accent) / 0.07) 58%, rgb(var(--kx-soft) / 0.9))";
+const DRAFT_COVER_FALLBACK = "linear-gradient(150deg, rgb(var(--kx-accent) / 0.16), rgb(var(--kx-accent) / 0.05))";
+// Soft accent scrim layered over an uploaded cover photo so the header always
+// carries a hint of the brand green and the avatar ring reads on any image.
+const COVER_SCRIM = "linear-gradient(180deg, rgb(var(--kx-accent) / 0.02), rgb(var(--kx-accent) / 0.14))";
 
 // Shared classes for the circular header action buttons — kx tokens so they
 // adapt to dark mode (previously hard-coded bg-white / slate / blue).
@@ -430,9 +436,9 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
     <div>
       <div className="relative">
         <div
-          className="h-24 sm:h-40 w-full"
+          className="h-36 sm:h-52 w-full"
           style={{
-            background: coverUrl ? `center / cover no-repeat url("${coverUrl}")` : COVER_FALLBACK,
+            background: coverUrl ? `${COVER_SCRIM}, center / cover no-repeat url("${coverUrl}")` : COVER_FALLBACK,
           }}
         />
         <div className="px-4 -mt-10 sm:-mt-14">
@@ -482,7 +488,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                       "inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-bold shadow-kx transition",
                       following
                         ? "border border-kx-stroke bg-kx-card text-kx-text hover:border-kx-accent/40 hover:bg-kx-accent/10 hover:text-kx-accent"
-                        : "bg-kx-accent text-white hover:brightness-110",
+                        : "bg-kx-accent text-kx-onAccent hover:brightness-110",
                     )}
                     onClick={toggleFollow}
                   >
@@ -502,7 +508,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             {user.bio ? <p className="mt-2 text-kx-text text-sm whitespace-pre-wrap break-words">{user.bio}</p> : null}
             <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-kx-subtle">
               {profileRegion ? (
-                <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-kx-accent/15 bg-kx-accent/[0.07] px-2.5 text-[12px] font-bold text-kx-accent shadow-[0_8px_22px_rgba(17,113,104,0.08)] dark:border-kx-accent/25 dark:bg-kx-accent/15">
+                <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-kx-accent/15 bg-kx-accent/[0.07] px-2.5 text-[12px] font-bold text-kx-accent shadow-[0_8px_22px_rgb(var(--kx-accent)/0.08)]">
                   <MapPin className="w-3.5 h-3.5" />
                   <span aria-hidden="true">{profileRegion.country_emoji}</span>
                   <span>{profileLocalRegionLabel}</span>
@@ -512,19 +518,31 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 <span className="inline-flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> {L.joined_prefix} {fullDateTime(user.joined_at).split(" ")[0]}</span>
               ) : null}
             </div>
-            {/* Slim stats row — following / followers / posts are the three
-                numbers users actually scan; total heat / views / saves were
-                noise that lit up the header but nobody read. */}
-            <div className="mt-2 flex items-center gap-4 text-sm flex-wrap">
-              <Link href={`/u/${user.handle}/following`} className="hover:underline">
-                <strong>{compactNumber(user.following_count || 0)}</strong>
-                <span className="text-kx-muted ml-1">{L.stat_following}</span>
+            {/* Stats row — mirrors the iOS redesign: big bold tabular number
+                over a small muted label, columns separated by hairlines.
+                Following / followers stay tappable (number turns 墨绿 on
+                hover); posts is a plain readout. */}
+            <div className="mt-3.5 flex items-stretch">
+              <Link href={`/u/${user.handle}/following`} className="group flex flex-col pr-5 sm:pr-7">
+                <span className="kx-tabular-nums text-[21px] font-bold leading-7 text-kx-text transition-colors group-hover:text-kx-accent">
+                  {compactNumber(user.following_count || 0)}
+                </span>
+                <span className="mt-0.5 text-[11px] font-medium text-kx-muted">{L.stat_following}</span>
               </Link>
-              <Link href={`/u/${user.handle}/followers`} className="hover:underline">
-                <strong>{compactNumber(user.follower_count || 0)}</strong>
-                <span className="text-kx-muted ml-1">{L.stat_followers}</span>
+              <span aria-hidden="true" className="my-1 w-px bg-kx-stroke/40" />
+              <Link href={`/u/${user.handle}/followers`} className="group flex flex-col px-5 sm:px-7">
+                <span className="kx-tabular-nums text-[21px] font-bold leading-7 text-kx-text transition-colors group-hover:text-kx-accent">
+                  {compactNumber(user.follower_count || 0)}
+                </span>
+                <span className="mt-0.5 text-[11px] font-medium text-kx-muted">{L.stat_followers}</span>
               </Link>
-              <span><strong>{compactNumber(user.post_count || 0)}</strong> <span className="text-kx-muted">{L.stat_posts}</span></span>
+              <span aria-hidden="true" className="my-1 w-px bg-kx-stroke/40" />
+              <span className="flex flex-col pl-5 sm:pl-7">
+                <span className="kx-tabular-nums text-[21px] font-bold leading-7 text-kx-text">
+                  {compactNumber(user.post_count || 0)}
+                </span>
+                <span className="mt-0.5 text-[11px] font-medium text-kx-muted">{L.stat_posts}</span>
+              </span>
             </div>
             {/* Self profile no longer stacks workbench entries — the top-right
                 workbench button (/my/features) is the only entry; the profile
@@ -538,13 +556,16 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                     {user.role === "creator" ? L.role_creator : user.role === "admin" ? L.role_admin : user.role}
                   </span>
                 ) : null}
+                {/* Badge strip reads in the single accent family; only the
+                    "pending review" state keeps the warm --kx-heat semantic
+                    tier. Token-driven in both themes — no dark: patches. */}
                 {user.merchant_verified ? (
-                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 font-bold dark:bg-emerald-500/15 dark:text-emerald-300">{L.merchant_verified}</span>
+                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-kx-accentSoft text-kx-accent font-bold ring-1 ring-inset ring-kx-accent/20">{L.merchant_verified}</span>
                 ) : user.is_merchant ? (
-                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-amber-100 text-amber-700 font-bold dark:bg-amber-500/15 dark:text-amber-300">{L.merchant_pending}</span>
+                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-kx-heat/10 text-kx-heat font-bold ring-1 ring-inset ring-kx-heat/25">{L.merchant_pending}</span>
                 ) : null}
                 {user.creator_badge ? (
-                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-pink-100 text-pink-700 font-bold dark:bg-pink-500/15 dark:text-pink-300">{user.creator_badge}</span>
+                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-kx-accent/[0.07] text-kx-accent font-bold ring-1 ring-inset ring-kx-accent/25">{user.creator_badge}</span>
                 ) : null}
                 {/* Admin-assigned custom tags — bordered chips. */}
                 {(user.custom_tags || []).map((tag) => (
@@ -587,9 +608,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
         {segmentQuery.isLoading ? (
-          <>
-            <PostSkeleton /><PostSkeleton />
-          </>
+          <FeedSkeletonList count={2} />
         ) : segmentQuery.isError ? (
           <ErrorState onRetry={() => segmentQuery.refetch()} />
         ) : !segmentQuery.data?.items?.length ? (

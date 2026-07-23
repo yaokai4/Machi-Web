@@ -32,12 +32,11 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  // Match the app shell's own base surface so the browser chrome blends into
-  // the page instead of clashing: the light body gradient starts at #FFFEFC
-  // and the dark body settles on #121019.
+  // Match the app shell's flat token ground (--kx-bg) so the browser chrome
+  // blends into the page: warm off-white #F8F7F4 in light, #101216 in dark.
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#121019" },
-    { color: "#FFFEFC" },
+    { media: "(prefers-color-scheme: dark)", color: "#101216" },
+    { color: "#F8F7F4" },
   ],
   width: "device-width",
   initialScale: 1,

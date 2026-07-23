@@ -115,7 +115,7 @@ export function PracticeClient() {
               type="button"
               onClick={() => load.mutate()}
               disabled={load.isPending}
-              className="inline-flex items-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90 disabled:opacity-60"
             >
               {load.isPending ? <Loader className="h-4 w-4 animate-spin" /> : <ListChecks className="h-4 w-4" />}
               {t("换一组题", "問題を取得", "Get a set")}

@@ -18,6 +18,9 @@ const config: Config = {
           muted: "rgb(var(--kx-muted) / <alpha-value>)",
           accent: "rgb(var(--kx-accent) / <alpha-value>)",
           accentSoft: "rgb(var(--kx-accent-soft) / <alpha-value>)",
+          // Foreground on an accent fill: white in light, page ink in dark
+          // (mirrors iOS onAccent) — keeps WCAG AA without dark: overrides.
+          onAccent: "rgb(var(--kx-on-accent) / <alpha-value>)",
           heat: "rgb(var(--kx-heat) / <alpha-value>)",
           like: "rgb(var(--kx-like) / <alpha-value>)",
           repost: "rgb(var(--kx-repost) / <alpha-value>)",
@@ -34,13 +37,16 @@ const config: Config = {
         "kx-sheet": "24px",
       },
       boxShadow: {
-        kx: "0 10px 24px -18px rgb(var(--kx-shadow) / 0.34), 0 1px 2px rgb(var(--kx-shadow) / 0.04)",
-        "kx-glow": "0 18px 44px -24px rgb(var(--kx-shadow) / 0.42)",
-        "kx-bar": "0 -4px 18px -10px rgb(var(--kx-shadow) / 0.20)",
-        // Semantic card / floating-element shadows — token-driven so they
-        // collapse to a crisp near-black edge in dark mode automatically.
-        "kx-card": "0 12px 34px -28px rgb(var(--kx-shadow) / 0.55), 0 1px 2px rgb(var(--kx-shadow) / 0.05)",
+        // Two semantic elevation tiers only — "resting card" and "floating
+        // element". Token-driven so dark mode collapses to a crisp near-black
+        // edge automatically. Legacy names alias the same two tiers so older
+        // call sites converge without edits.
+        "kx-card": "0 1px 2px rgb(var(--kx-shadow) / 0.04), 0 12px 34px -28px rgb(var(--kx-shadow) / 0.45)",
         "kx-float": "0 22px 60px -42px rgb(var(--kx-shadow) / 0.55)",
+        kx: "0 1px 2px rgb(var(--kx-shadow) / 0.04), 0 12px 34px -28px rgb(var(--kx-shadow) / 0.45)",
+        "kx-glow": "0 22px 60px -42px rgb(var(--kx-shadow) / 0.55)",
+        // Upward shadow for bottom-anchored bars/sheets (direction-specific).
+        "kx-bar": "0 -4px 18px -10px rgb(var(--kx-shadow) / 0.20)",
       },
       fontFamily: {
         // Kept in sync with the `html, body` stack in globals.css. System

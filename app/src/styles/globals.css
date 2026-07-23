@@ -9,11 +9,12 @@
    ============================================================ */
 
 :root {
-  /* base palette — light */
-  --kx-bg: 246 247 249;             /* systemGroupedBackground */
+  /* base palette — light. Anchored to the iOS app (AccentColor.colorset +
+     pageBackground): warm off-white ground, deep ink-green accent. */
+  --kx-bg: 248 247 244;             /* #F8F7F4 — iOS pageBackground */
   --kx-surface: 255 255 255;        /* cardBackground */
   --kx-card: 255 255 255;
-  --kx-soft: 246 247 250;           /* tertiarySystemGroupedBackground */
+  --kx-soft: 242 241 238;           /* #F2F1EE — iOS softBackground */
   /* Stroke bumped from #d7dbe0 toward #acb5c3: the previous value was so
      light that on a white card it was barely visible. The new value
      is still soft (not a hard divider) but reads on first glance. */
@@ -23,8 +24,12 @@
   /* Darkened from 138 145 158 (#8A919E, 3.17:1 — failed WCAG AA) to #6B7280
      (≈4.7:1) so all secondary text incl. the Machi AI disclaimer clears AA. */
   --kx-muted: 107 114 126;
-  --kx-accent: 20 112 103;
+  --kx-accent: 19 99 89;            /* #136359 — iOS AccentColor (light) */
   --kx-accent-soft: 229 242 237;
+  /* Foreground painted ON an accent fill. White on the deep light-mode green,
+     page ink on the lighter dark-mode mint (white would fail WCAG AA there).
+     Token-driven so no per-theme component overrides are needed. */
+  --kx-on-accent: 255 255 255;
   --kx-heat: 204 112 37;
   --kx-like: 232 62 119;
   --kx-repost: 36 158 92;
@@ -32,14 +37,22 @@
   --kx-verified: 36 116 235;
   --kx-danger: 220 64 64;
   --kx-shadow: 17 22 34;
-  --kx-living-bg: 250 248 244;
-  --kx-living-surface: 255 255 253;
-  --kx-living-soft: 241 238 231;
-  --kx-living-ink: 28 29 27;
-  --kx-living-muted: 105 106 101;
-  --kx-living-accent: 20 112 103;
-  --kx-living-accent-soft: 229 242 237;
-  --kx-living-warm: 207 101 69;
+  /* ---- Living / guide compatibility aliases ----
+     The "living" channels used to carry their own warm palette. The whole app
+     now shares one iOS-derived palette, so these resolve to the core tokens.
+     Variable names are kept so existing components need zero changes; new
+     code should reference the core --kx-* tokens directly. */
+  --kx-living-bg: var(--kx-bg);
+  --kx-living-surface: var(--kx-surface);
+  --kx-living-soft: var(--kx-soft);
+  --kx-living-ink: var(--kx-text);
+  --kx-living-muted: var(--kx-muted);
+  --kx-living-accent: var(--kx-accent);
+  --kx-living-accent-soft: var(--kx-accent-soft);
+  --kx-living-warm: var(--kx-heat);
+  /* Referenced by guide/jlpt exam panels; was previously undefined (silently
+     transparent). Resolves to the soft inset-panel tone. */
+  --kx-living-canvas: var(--kx-soft);
 
   /* ---- Machi marketing design tokens ----
      Centralised so cards / pills / shadows can read one source of
@@ -81,8 +94,9 @@
   --kx-text: 240 242 246;
   --kx-subtle: 168 174 186;
   --kx-muted: 124 132 144;
-  --kx-accent: 92 190 178;
+  --kx-accent: 92 190 178;          /* #5CBEB2 — iOS AccentColor (dark) */
   --kx-accent-soft: 31 62 57;
+  --kx-on-accent: 16 18 22;         /* page ink on the mint fill (~9:1) */
   --kx-heat: 247 162 79;
   --kx-like: 240 96 144;
   --kx-repost: 96 198 130;
@@ -90,14 +104,8 @@
   --kx-verified: 132 170 250;
   --kx-danger: 246 112 112;
   --kx-shadow: 0 0 0;
-  --kx-living-bg: 18 20 19;
-  --kx-living-surface: 27 30 28;
-  --kx-living-soft: 40 43 40;
-  --kx-living-ink: 244 244 239;
-  --kx-living-muted: 168 172 164;
-  --kx-living-accent: 92 190 178;
-  --kx-living-accent-soft: 31 62 57;
-  --kx-living-warm: 231 139 101;
+  /* --kx-living-* aliases from :root resolve against these dark values
+     automatically (declared on the same element), so no re-declaration. */
 }
 
 html,
@@ -135,48 +143,10 @@ html {
 
 body {
   min-height: 100dvh;
-  /* No explicit color here — the `html, body { color: rgb(var(--kx-text)) }`
-     rule above owns text colour so dark mode inherits correctly. */
-  background:
-    linear-gradient(45deg, #FFFEFC 0%, #FAF7F1 24%, #F4FAF6 48%, #F2F9F4 72%, #FCFAF4 100%);
-  background-size: 100% 100%;
-}
-
-:root.dark body, [data-theme="dark"] body {
-  background-color: #121019;
-  background-image:
-    linear-gradient(180deg, rgb(22 18 24) 0%, rgb(18 16 23) 48%, rgb(12 13 18) 100%);
-  background-size: 400% 400%;
-}
-
-body::before {
-  content: none;
-}
-@keyframes kx-aurora {
-  0%   { transform: translate3d(0, 0, 0) scale(1); }
-  50%  { transform: translate3d(2%, 1.5%, 0) scale(1.06); }
-  100% { transform: translate3d(-1.5%, 2%, 0) scale(1.03); }
-}
-
-@keyframes ambientWarmth {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
-
-@keyframes ambientPrism {
-  0% {
-    transform: translate3d(-1.5%, -1%, 0) scale(1);
-    background-position: 0% 44%, 96% 18%, 78% 92%, 18% 88%;
-  }
-  45% {
-    transform: translate3d(1.2%, 0.8%, 0) scale(1.035);
-    background-position: 18% 36%, 82% 28%, 88% 76%, 28% 72%;
-  }
-  100% {
-    transform: translate3d(-0.6%, 1.4%, 0) scale(1.06);
-    background-position: 6% 56%, 92% 12%, 68% 84%, 12% 78%;
-  }
+  /* No explicit color / background here — `html, body` above paints the flat
+     token ground (--kx-bg) in both themes. The page is a quiet off-white
+     (mirrors the iOS pageBackground); any tinting lives in the single static
+     accent wash on .kx-app-shell::before. */
 }
 
 /* Accessibility + perf: honour the OS "reduce motion" setting. Animations
@@ -271,36 +241,24 @@ body::before {
 
 @layer components {
   .kx-glass-surface {
-    /* Borderless "无界悬浮": no 1px stroke — separation comes from a wide,
-       soft diffuse shadow + the card sitting lighter than the page bg.
-       Larger radius (kx-lg / 20px) for the premium feel. A whisper-thin
-       inset ring (invisible in light, a faint edge in dark) keeps cards
-       from melting into the dark surface. */
+    /* Calm card (mirrors iOS KXCard): flat surface, hairline stroke and a
+       single soft resting shadow. No gradients, no backdrop blur — cards read
+       against the warm page ground through tone, not glassmorphism. */
     @apply rounded-kx-lg text-kx-text;
-    background:
-      linear-gradient(180deg, rgb(var(--kx-card) / 0.99), rgb(var(--kx-card) / 0.96)),
-      linear-gradient(135deg, rgb(255 255 255 / 0.50), rgb(var(--kx-soft) / 0.30));
+    background: rgb(var(--kx-card));
+    border: 1px solid rgb(var(--kx-stroke) / 0.28);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.55),
-      inset 0 0 0 1px rgb(var(--kx-stroke) / 0.08),
       0 1px 2px rgb(var(--kx-shadow) / 0.04),
-      0 10px 34px -14px rgb(var(--kx-shadow) / 0.12);
-    backdrop-filter: blur(16px) saturate(1.12);
-    -webkit-backdrop-filter: blur(16px) saturate(1.12);
+      0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
   }
 
   .kx-glass-capsule {
-    @apply rounded-full border border-kx-stroke/90;
-    background:
-      linear-gradient(180deg, rgb(var(--kx-surface) / 0.78), rgb(var(--kx-surface) / 0.54)),
-      radial-gradient(circle at 30% 0%, rgb(255 255 255 / 0.74), transparent 55%),
-      linear-gradient(135deg, rgb(255 255 255 / 0.30), transparent 52%, rgb(255 255 255 / 0.18));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.86),
-      inset 0 -1px 0 rgb(var(--kx-stroke) / 0.26),
-      0 12px 30px -22px rgb(var(--kx-shadow) / 0.44);
-    backdrop-filter: blur(28px) saturate(1.45);
-    -webkit-backdrop-filter: blur(28px) saturate(1.45);
+    /* Quiet capsule: translucent surface + hairline, gentle blur only. */
+    @apply rounded-full border border-kx-stroke/40;
+    background: rgb(var(--kx-surface) / 0.85);
+    box-shadow: 0 10px 28px -24px rgb(var(--kx-shadow) / 0.35);
+    backdrop-filter: blur(16px) saturate(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.05);
   }
 
   .kx-mobile-tabbar {
@@ -309,14 +267,12 @@ body::before {
     z-index: 46;
     width: min(calc(100vw - 1.2rem), 23.5rem);
     transform: translateX(-50%);
-    border: 1px solid rgba(255, 255, 255, 0.8);
+    border: 1px solid rgb(var(--kx-stroke) / 0.35);
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.78);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.72),
-      0 10px 34px -18px rgba(15, 23, 42, 0.24);
-    backdrop-filter: blur(22px) saturate(1.2);
-    -webkit-backdrop-filter: blur(22px) saturate(1.2);
+    background: rgb(var(--kx-surface) / 0.85);
+    box-shadow: 0 10px 34px -22px rgb(var(--kx-shadow) / 0.28);
+    backdrop-filter: blur(18px) saturate(1.05);
+    -webkit-backdrop-filter: blur(18px) saturate(1.05);
   }
 
   .kx-mobile-tabbar::before {
@@ -387,7 +343,6 @@ body::before {
     transform: translateX(-50%);
     border-radius: 999px;
     background: currentColor;
-    box-shadow: 0 0 10px rgb(var(--kx-accent) / 0.62);
   }
 
   .kx-mobile-tabbar-icon {
@@ -405,7 +360,6 @@ body::before {
 
   .kx-mobile-tabbar-item[data-active="true"] svg {
     stroke-width: 2.1;
-    filter: drop-shadow(0 3px 7px rgb(var(--kx-accent) / 0.16));
   }
 
   .kx-mobile-floating-compose {
@@ -423,13 +377,9 @@ body::before {
     align-items: center;
     justify-content: center;
     border-radius: 999px;
-    color: white;
-    background:
-      linear-gradient(135deg, rgb(34 140 126), rgb(var(--kx-accent)) 54%, rgb(12 78 70));
-    border: 1px solid rgb(255 255 255 / 0.7);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.24),
-      0 16px 36px -18px rgb(var(--kx-accent) / 0.72);
+    color: rgb(var(--kx-on-accent));
+    background: rgb(var(--kx-accent));
+    box-shadow: 0 14px 30px -18px rgb(var(--kx-accent) / 0.55);
     transform: translateZ(0);
     transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
     -webkit-tap-highlight-color: transparent;
@@ -443,9 +393,9 @@ body::before {
 
   :root.dark .kx-mobile-tabbar,
   [data-theme="dark"] .kx-mobile-tabbar {
-    border-color: rgba(255, 255, 255, 0.12);
-    background: rgba(24, 26, 32, 0.62);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+    border-color: rgb(var(--kx-stroke) / 0.30);
+    background: rgb(var(--kx-surface) / 0.80);
+    box-shadow: 0 10px 34px -20px rgb(0 0 0 / 0.5);
   }
 
   :root.dark .kx-mobile-tabbar[data-elevated="true"],
@@ -457,33 +407,17 @@ body::before {
 
   :root.dark .kx-mobile-floating-compose,
   [data-theme="dark"] .kx-mobile-floating-compose {
-    border-color: rgba(255, 255, 255, 0.16);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.14),
-      0 18px 40px -20px rgb(var(--kx-accent) / 0.9);
+    box-shadow: 0 14px 32px -18px rgb(var(--kx-accent) / 0.45);
   }
 
   .kx-glass-bar {
-    /* Warm translucent chrome: keep the old multi-color page atmosphere visible. */
-    @apply border-b border-kx-stroke/20;
-    background:
-      radial-gradient(34rem 13rem at 8% -45%, rgb(255 211 190 / 0.30), transparent 70%),
-      radial-gradient(32rem 12rem at 92% -40%, rgb(211 226 255 / 0.28), transparent 72%),
-      radial-gradient(24rem 12rem at 58% 120%, rgb(210 245 228 / 0.18), transparent 72%),
-      linear-gradient(
-        45deg,
-        rgb(255 254 252 / 0.58) 0%,
-        rgb(252 247 241 / 0.46) 24%,
-        rgb(248 251 255 / 0.42) 48%,
-        rgb(246 251 247 / 0.38) 72%,
-        rgb(255 249 244 / 0.48) 100%
-      );
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.58),
-      0 10px 28px -24px rgb(var(--kx-shadow) / 0.38);
-    backdrop-filter: blur(18px) saturate(1.18);
-    -webkit-backdrop-filter: blur(18px) saturate(1.18);
-    transition: background 240ms ease, box-shadow 240ms ease, border-color 240ms ease;
+    /* Quiet chrome: the page's own off-white at ~85% + a hairline bottom
+       edge. Blur keeps text legible over scrolling content — nothing more. */
+    @apply border-b border-kx-stroke/25;
+    background: rgb(var(--kx-bg) / 0.85);
+    backdrop-filter: blur(14px) saturate(1.05);
+    -webkit-backdrop-filter: blur(14px) saturate(1.05);
+    transition: background 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
   }
 
   .kx-listing-page {
@@ -530,12 +464,14 @@ body::before {
     width: 2.5rem;
     flex-shrink: 0;
     place-items: center;
-    border-radius: 0.9rem;
-    color: white;
+    border-radius: 13px;
+    color: rgb(var(--kx-on-accent));
     background: rgb(var(--kx-living-accent));
   }
 
   .kx-listing-page[data-kind="marketplace"] .kx-listing-channel-icon {
+    /* Constant olive fill in both themes — white stays the readable pair. */
+    color: white;
     background: rgb(82 111 63);
   }
 
@@ -552,11 +488,11 @@ body::before {
     justify-content: center;
     gap: 0.45rem;
     border-radius: 999px;
-    color: white;
+    color: rgb(var(--kx-on-accent));
     background: rgb(var(--kx-living-accent));
     font-size: 0.875rem;
-    font-weight: 800;
-    box-shadow: 0 14px 28px -19px rgb(var(--kx-living-accent) / 0.78);
+    font-weight: 700;
+    box-shadow: 0 12px 26px -18px rgb(var(--kx-living-accent) / 0.55);
     transition: transform 180ms ease, filter 180ms ease;
   }
 
@@ -595,7 +531,7 @@ body::before {
     flex-shrink: 0;
     place-items: center;
     border-radius: 999px;
-    color: white;
+    color: rgb(var(--kx-on-accent));
     background: rgb(var(--kx-living-accent));
   }
 
@@ -603,9 +539,9 @@ body::before {
     display: grid;
     overflow: hidden;
     border: 1px solid rgb(var(--kx-stroke) / 0.34);
-    border-radius: 1.25rem;
+    border-radius: 20px;
     background: rgb(var(--kx-living-surface));
-    box-shadow: 0 18px 46px -34px rgb(var(--kx-shadow) / 0.52);
+    box-shadow: 0 16px 42px -34px rgb(var(--kx-shadow) / 0.42);
   }
 
   .kx-job-search-field {
@@ -629,11 +565,11 @@ body::before {
     justify-content: center;
     gap: 0.5rem;
     margin: 0.5rem;
-    border-radius: 0.9rem;
-    color: white;
+    border-radius: 13px;
+    color: rgb(var(--kx-on-accent));
     background: rgb(var(--kx-living-accent));
     font-size: 0.9rem;
-    font-weight: 900;
+    font-weight: 700;
     transition: filter 180ms ease, transform 180ms ease;
   }
 
@@ -666,12 +602,14 @@ body::before {
     padding: 0 0.9rem;
     color: rgb(var(--kx-living-muted));
     font-size: 0.78rem;
-    font-weight: 850;
+    font-weight: 700;
     transition: color 180ms ease, background 180ms ease, transform 180ms ease;
   }
 
   .kx-listing-tab[data-active="true"] {
-    color: white;
+    /* Inverted pill: ink fill + page-ground text works in both themes
+       (dark ink/light text in light mode flips automatically in dark). */
+    color: rgb(var(--kx-bg));
     background: rgb(var(--kx-living-ink));
   }
 
@@ -696,7 +634,7 @@ body::before {
     color: rgb(var(--kx-living-ink));
     background: rgb(var(--kx-living-surface));
     font-size: 0.82rem;
-    font-weight: 800;
+    font-weight: 700;
     transition: color 180ms ease, border-color 180ms ease, background 180ms ease, transform 180ms ease;
   }
 
@@ -744,30 +682,30 @@ body::before {
     display: block;
     overflow: hidden;
     border: 1px solid rgb(var(--kx-stroke) / 0.18);
-    border-radius: 1.25rem;
+    border-radius: 20px;
     background: rgb(var(--kx-living-surface));
-    box-shadow: 0 14px 38px -32px rgb(var(--kx-shadow) / 0.42);
-    transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+    box-shadow: 0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
+    transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
   }
 
   .kx-secondhand-card:hover,
   .kx-service-card:hover {
     transform: translateY(-2px);
     border-color: rgb(var(--kx-living-accent) / 0.30);
-    box-shadow: 0 24px 54px -36px rgb(var(--kx-shadow) / 0.56);
+    box-shadow: 0 22px 60px -42px rgb(var(--kx-shadow) / 0.45);
   }
 
   .kx-stay-image {
-    border-radius: 1.45rem;
-    box-shadow: 0 18px 46px -34px rgb(var(--kx-shadow) / 0.58);
+    border-radius: 20px;
+    box-shadow: 0 12px 34px -28px rgb(var(--kx-shadow) / 0.35);
   }
 
   .kx-job-list {
     overflow: hidden;
     border: 1px solid rgb(var(--kx-stroke) / 0.22);
-    border-radius: 1.35rem;
+    border-radius: 20px;
     background: rgb(var(--kx-living-surface));
-    box-shadow: 0 20px 52px -42px rgb(var(--kx-shadow) / 0.44);
+    box-shadow: 0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
   }
 
   .kx-job-row {
@@ -789,12 +727,11 @@ body::before {
     width: 3rem;
     flex-shrink: 0;
     place-items: center;
-    border-radius: 0.85rem;
-    color: white;
+    border-radius: 13px;
+    color: rgb(var(--kx-on-accent));
     background: rgb(var(--kx-living-accent));
     font-size: 1.05rem;
-    font-weight: 900;
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22);
+    font-weight: 700;
   }
 
   .kx-job-guide-insert {
@@ -803,17 +740,12 @@ body::before {
     gap: 0.85rem;
     padding: 0.9rem 1rem;
     border-bottom: 1px solid rgb(var(--kx-stroke) / 0.20);
-    background: rgb(247 245 252);
+    background: rgb(var(--kx-soft) / 0.65);
     transition: background 180ms ease;
   }
 
   .kx-job-guide-insert:hover {
-    background: rgb(241 237 249);
-  }
-
-  :root.dark .kx-job-guide-insert,
-  [data-theme="dark"] .kx-job-guide-insert {
-    background: rgb(42 38 51);
+    background: rgb(var(--kx-accent-soft) / 0.5);
   }
 
   .kx-living-detail-header {
@@ -834,9 +766,9 @@ body::before {
   .kx-living-detail-shell {
     overflow: hidden;
     border: 1px solid rgb(var(--kx-stroke) / 0.18);
-    border-radius: 1.8rem;
+    border-radius: 24px;
     background: rgb(var(--kx-living-surface));
-    box-shadow: 0 26px 70px -52px rgb(var(--kx-shadow) / 0.62);
+    box-shadow: 0 22px 60px -42px rgb(var(--kx-shadow) / 0.45);
   }
 
   .kx-living-detail-gallery {
@@ -854,8 +786,9 @@ body::before {
   }
 
   .kx-living-detail-primary {
+    color: rgb(var(--kx-on-accent));
     background: rgb(var(--kx-living-accent));
-    box-shadow: 0 18px 36px -22px rgb(var(--kx-living-accent) / 0.72);
+    box-shadow: 0 14px 30px -20px rgb(var(--kx-living-accent) / 0.5);
   }
 
   .kx-living-detail-primary:hover {
@@ -873,7 +806,7 @@ body::before {
     color: rgb(var(--kx-living-muted));
     background: rgb(var(--kx-living-surface));
     font-size: 0.875rem;
-    font-weight: 800;
+    font-weight: 700;
   }
 
   .kx-living-detail-secondary:hover {
@@ -891,37 +824,32 @@ body::before {
 
   .kx-living-contact-card {
     border: 1px solid rgb(var(--kx-stroke) / 0.20);
-    border-radius: 1.55rem;
+    border-radius: 20px;
     padding: 1rem;
     background: rgb(var(--kx-living-surface));
-    box-shadow: 0 22px 54px -42px rgb(var(--kx-shadow) / 0.52);
+    box-shadow: 0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
   }
 
   .kx-living-mini-card {
     border: 1px solid rgb(var(--kx-stroke) / 0.18);
     background: rgb(var(--kx-living-surface));
-    box-shadow: 0 16px 38px -32px rgb(var(--kx-shadow) / 0.48);
+    box-shadow: 0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
   }
 
   .kx-living-mini-card:hover {
     border-color: rgb(var(--kx-living-accent) / 0.34);
-    box-shadow: 0 24px 48px -34px rgb(var(--kx-shadow) / 0.56);
+    box-shadow: 0 22px 60px -42px rgb(var(--kx-shadow) / 0.45);
   }
 
   .kx-guide-channel-header {
     margin: 0.75rem 1rem 0;
     overflow: hidden;
     border: 1px solid rgb(var(--kx-stroke) / 0.18);
-    border-radius: 1.6rem;
+    border-radius: 24px;
     padding: 1.25rem;
     background:
-      linear-gradient(135deg, rgb(246 241 231), rgb(var(--kx-living-surface)));
-    box-shadow: 0 24px 60px -48px rgb(var(--kx-shadow) / 0.56);
-  }
-
-  :root.dark .kx-guide-channel-header,
-  [data-theme="dark"] .kx-guide-channel-header {
-    background: linear-gradient(135deg, rgb(39 36 31), rgb(var(--kx-living-surface)));
+      linear-gradient(135deg, rgb(var(--kx-soft)), rgb(var(--kx-living-surface)));
+    box-shadow: 0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
   }
 
   .kx-guide-channel-icon {
@@ -930,35 +858,25 @@ body::before {
     width: 3rem;
     flex-shrink: 0;
     place-items: center;
-    border-radius: 1rem;
+    border-radius: 13px;
     color: rgb(var(--kx-living-accent));
     background: rgb(var(--kx-living-accent-soft));
   }
 
   .kx-guide-page {
     min-height: 100%;
-    background:
-      radial-gradient(80% 42% at 92% -8%, rgb(var(--kx-living-accent) / 0.055), transparent 62%),
-      radial-gradient(70% 36% at 2% 0%, rgb(var(--kx-living-warm) / 0.045), transparent 60%),
-      linear-gradient(180deg, rgb(251 249 244) 0%, rgb(250 250 247) 28rem, rgb(255 255 255) 100%);
-  }
-
-  :root.dark .kx-guide-page,
-  [data-theme="dark"] .kx-guide-page {
-    background:
-      radial-gradient(120% 60% at 88% -6%, rgb(var(--kx-living-accent) / 0.10), transparent 60%),
-      linear-gradient(180deg, rgb(30 29 27), rgb(var(--kx-living-bg)) 34rem);
+    /* Flat token ground — atmosphere comes from the shell's single wash. */
+    background: rgb(var(--kx-bg));
   }
 
   .kx-guide-hero {
     position: relative;
     overflow: hidden;
-    border-radius: 2rem;
+    border-radius: 24px;
     border: 0;
     background:
-      radial-gradient(120% 90% at 86% -25%, rgb(var(--kx-living-accent) / 0.12), transparent 54%),
-      radial-gradient(90% 100% at 0% 120%, rgb(var(--kx-living-warm) / 0.08), transparent 52%),
-      linear-gradient(135deg, rgb(252 249 242 / 0.92), rgb(255 255 255 / 0.70));
+      radial-gradient(120% 90% at 86% -25%, rgb(var(--kx-living-accent) / 0.08), transparent 55%)
+      rgb(var(--kx-surface));
     box-shadow: none;
   }
 
@@ -966,9 +884,9 @@ body::before {
   [data-theme="dark"] .kx-guide-hero {
     border-color: rgb(255 255 255 / 0.06);
     background:
-      radial-gradient(130% 130% at 90% -20%, rgb(var(--kx-living-accent) / 0.18), transparent 54%),
-      linear-gradient(125deg, rgb(35 33 29), rgb(27 30 28));
-    box-shadow: 0 26px 60px -42px rgb(0 0 0 / 0.6);
+      radial-gradient(130% 130% at 90% -20%, rgb(var(--kx-living-accent) / 0.14), transparent 55%)
+      rgb(var(--kx-surface));
+    box-shadow: 0 22px 60px -42px rgb(0 0 0 / 0.55);
   }
 
   .kx-guide-door {
@@ -980,7 +898,7 @@ body::before {
     padding: 0.55rem 0.15rem;
     color: rgb(var(--kx-living-ink));
     font-size: 0.84rem;
-    font-weight: 850;
+    font-weight: 700;
     transition: color 180ms ease, border-color 180ms ease, padding 180ms ease;
   }
 
@@ -997,22 +915,18 @@ body::before {
     align-items: center;
     gap: 0.65rem;
     border: 1px solid rgb(var(--kx-stroke) / 0.26);
-    border-radius: 1.35rem;
+    border-radius: 20px;
     padding: 0.4rem 0.45rem 0.4rem 1.1rem;
-    background:
-      linear-gradient(180deg, rgb(var(--kx-living-surface)), rgb(var(--kx-living-surface) / 0.92));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.7),
-      0 18px 38px -32px rgb(var(--kx-shadow) / 0.32);
+    background: rgb(var(--kx-living-surface));
+    box-shadow: 0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
     transition: border-color 200ms ease, box-shadow 200ms ease;
   }
 
   .kx-guide-search:focus-within {
     border-color: rgb(var(--kx-living-accent) / 0.5);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.7),
       0 0 0 4px rgb(var(--kx-living-accent) / 0.1),
-      0 18px 44px -28px rgb(var(--kx-living-accent) / 0.5);
+      0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
   }
 
   .kx-guide-search-button {
@@ -1020,19 +934,19 @@ body::before {
     min-height: 2.7rem;
     align-items: center;
     justify-content: center;
-    border-radius: 1.15rem;
+    border-radius: 999px;
     padding: 0 1.15rem;
-    color: white;
-    background: linear-gradient(135deg, rgb(34 140 126), rgb(var(--kx-living-accent)) 55%, rgb(14 86 78));
-    box-shadow: 0 10px 22px -12px rgb(var(--kx-living-accent) / 0.7);
+    color: rgb(var(--kx-on-accent));
+    background: rgb(var(--kx-living-accent));
+    box-shadow: 0 10px 22px -14px rgb(var(--kx-living-accent) / 0.5);
     font-size: 0.78rem;
-    font-weight: 850;
+    font-weight: 700;
     transition: transform 160ms ease, box-shadow 160ms ease;
   }
 
   .kx-guide-search-button:hover {
     transform: translateY(-1px);
-    box-shadow: 0 14px 28px -12px rgb(var(--kx-living-accent) / 0.8);
+    box-shadow: 0 12px 26px -14px rgb(var(--kx-living-accent) / 0.55);
   }
 
   .kx-guide-category-card,
@@ -1042,15 +956,13 @@ body::before {
   .kx-guide-directory-card,
   .kx-guide-action-card,
   .kx-guide-faq {
-    border: 1px solid rgb(var(--kx-stroke) / 0.34);
-    border-radius: 1.35rem;
-    background:
-      linear-gradient(180deg, rgb(255 255 255 / 0.98), rgb(255 255 255 / 0.92));
+    border: 1px solid rgb(var(--kx-stroke) / 0.28);
+    border-radius: 20px;
+    background: rgb(var(--kx-living-surface));
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.6),
-      0 2px 4px -2px rgb(var(--kx-shadow) / 0.06),
-      0 18px 40px -36px rgb(var(--kx-shadow) / 0.34);
-    transition: transform 220ms cubic-bezier(0.2, 0.7, 0.3, 1), border-color 220ms ease, box-shadow 220ms ease, background 220ms ease;
+      0 1px 2px rgb(var(--kx-shadow) / 0.04),
+      0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
+    transition: transform 200ms cubic-bezier(0.2, 0.7, 0.3, 1), border-color 200ms ease, box-shadow 200ms ease, background 200ms ease;
   }
 
   :root.dark .kx-guide-category-card,
@@ -1068,7 +980,6 @@ body::before {
   [data-theme="dark"] .kx-guide-action-card,
   [data-theme="dark"] .kx-guide-faq {
     border-color: rgb(255 255 255 / 0.06);
-    background: linear-gradient(180deg, rgb(var(--kx-living-surface)), rgb(var(--kx-living-surface) / 0.9));
   }
 
   .kx-guide-category-card {
@@ -1093,26 +1004,23 @@ body::before {
   .kx-guide-category-card:hover,
   .kx-guide-resource-card:hover,
   .kx-guide-action-card:hover {
-    transform: translateY(-4px);
+    transform: translateY(-2px);
     border-color: rgb(var(--kx-living-accent) / 0.4);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.6),
-      0 28px 60px -34px rgb(var(--kx-living-accent) / 0.4);
+    box-shadow: 0 22px 60px -42px rgb(var(--kx-shadow) / 0.45);
   }
 
   /* Guide-scoped refinements: only inside .kx-guide-page, so /home (SNS feed)
      and the discover page are untouched. Rounder cards + warmer, accent-tinted
      depth for a more premium "精致" feel. */
   .kx-guide-page .kx-card {
-    border-radius: 1.5rem;
+    border-radius: 24px;
   }
 
   .kx-guide-page .kx-card:not(.kx-guide-hero) {
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.5),
-      0 2px 4px -2px rgb(var(--kx-shadow) / 0.05),
-      0 16px 40px -32px rgb(var(--kx-living-accent) / 0.28);
-    transition: transform 220ms cubic-bezier(0.2, 0.7, 0.3, 1), box-shadow 220ms ease, border-color 220ms ease;
+      0 1px 2px rgb(var(--kx-shadow) / 0.04),
+      0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
+    transition: transform 200ms cubic-bezier(0.2, 0.7, 0.3, 1), box-shadow 200ms ease, border-color 200ms ease;
   }
 
   /* Category / topic pills below the search — softer, rounder, accent on hover. */
@@ -1130,29 +1038,22 @@ body::before {
     background: rgb(var(--kx-living-accent-soft));
   }
 
-  /* Icon "chip" inside action/quick cards — gradient fill + soft accent glow. */
+  /* Icon "chip" inside action/quick cards — flat soft-accent fill. */
   .kx-guide-page .kx-guide-icon-chip {
-    background: linear-gradient(150deg, rgb(var(--kx-living-accent) / 0.18), rgb(var(--kx-living-accent) / 0.08));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.5),
-      0 8px 18px -12px rgb(var(--kx-living-accent) / 0.5);
+    background: rgb(var(--kx-living-accent) / 0.12);
   }
 
   .kx-guide-plan-panel,
   .kx-guide-tool-panel,
   .kx-guide-context-empty {
-    border: 1px solid rgb(var(--kx-stroke) / 0.34);
-    border-radius: 1.35rem;
-    background:
-      linear-gradient(180deg, rgb(255 255 255 / 0.96), rgb(255 255 255 / 0.88));
+    border: 1px solid rgb(var(--kx-stroke) / 0.28);
+    border-radius: 20px;
+    background: rgb(var(--kx-living-surface));
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.7),
-      0 18px 40px -34px rgb(var(--kx-shadow) / 0.28);
+      0 1px 2px rgb(var(--kx-shadow) / 0.04),
+      0 12px 34px -28px rgb(var(--kx-shadow) / 0.28);
   }
 
-  /* Dark mode: the hardcoded white gradient above blows out on the dark
-     surface — mirror the guide-card dark treatment (living-surface fill +
-     faint white edge) so panels read as raised cards, not white blocks. */
   :root.dark .kx-guide-plan-panel,
   :root.dark .kx-guide-tool-panel,
   :root.dark .kx-guide-context-empty,
@@ -1160,10 +1061,6 @@ body::before {
   [data-theme="dark"] .kx-guide-tool-panel,
   [data-theme="dark"] .kx-guide-context-empty {
     border-color: rgb(255 255 255 / 0.06);
-    background: linear-gradient(180deg, rgb(var(--kx-living-surface)), rgb(var(--kx-living-surface) / 0.9));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.04),
-      0 18px 40px -34px rgb(0 0 0 / 0.5);
   }
 
   .kx-guide-tool-button {
@@ -1173,7 +1070,7 @@ body::before {
     align-items: center;
     justify-content: center;
     gap: 0.35rem;
-    border-radius: 1rem;
+    border-radius: 13px;
     border: 1px solid transparent;
     transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
   }
@@ -1184,19 +1081,8 @@ body::before {
     background: rgb(var(--kx-living-accent-soft) / 0.62);
   }
 
-  .kx-guide-action-card:last-child {
-    background: linear-gradient(180deg, rgb(255 255 255 / 0.98), rgb(255 255 255 / 0.92));
-  }
-
-  :root.dark .kx-guide-action-card:first-child,
-  [data-theme="dark"] .kx-guide-action-card:first-child {
-    background: rgb(43 38 50);
-  }
-
-  :root.dark .kx-guide-action-card:last-child,
-  [data-theme="dark"] .kx-guide-action-card:last-child {
-    background: rgb(33 47 42);
-  }
+  /* Action cards share the token surface in both themes — no per-theme
+     hardcoded patch fills. */
 
   @media (min-width: 640px) {
     .kx-job-search {
@@ -1225,34 +1111,18 @@ body::before {
     }
   }
 
-  /* Scroll-aware: deepen the bar's shadow once content scrolls under it
+  /* Scroll-aware: firm the bar up slightly once content scrolls under it
      (page sets data-scrolled="true" past a small threshold). */
   .kx-glass-bar[data-scrolled="true"] {
-    border-color: rgb(var(--kx-stroke) / 0.28);
-    background:
-      radial-gradient(34rem 13rem at 8% -45%, rgb(255 211 190 / 0.24), transparent 70%),
-      radial-gradient(32rem 12rem at 92% -40%, rgb(211 226 255 / 0.22), transparent 72%),
-      linear-gradient(
-        45deg,
-        rgb(255 254 252 / 0.68) 0%,
-        rgb(252 247 241 / 0.56) 24%,
-        rgb(248 251 255 / 0.54) 48%,
-        rgb(246 251 247 / 0.50) 72%,
-        rgb(255 249 244 / 0.58) 100%
-      );
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.66),
-      0 16px 34px -22px rgb(var(--kx-shadow) / 0.50);
+    border-color: rgb(var(--kx-stroke) / 0.35);
+    background: rgb(var(--kx-bg) / 0.92);
+    box-shadow: 0 12px 30px -26px rgb(var(--kx-shadow) / 0.35);
   }
 
   :root.dark .kx-glass-bar,
   [data-theme="dark"] .kx-glass-bar {
-    background:
-      linear-gradient(180deg, rgb(31 30 38 / 0.86), rgb(var(--kx-surface) / 0.68)),
-      linear-gradient(135deg, rgb(180 83 54 / 0.14), transparent 58%, rgb(99 102 241 / 0.08));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.08),
-      0 10px 28px -24px rgb(0 0 0 / 0.7);
+    background: rgb(var(--kx-surface) / 0.82);
+    box-shadow: 0 10px 28px -24px rgb(0 0 0 / 0.6);
   }
 
   .kx-liquid-button {
@@ -1310,7 +1180,7 @@ body::before {
   }
 
   .kx-discover-tab {
-    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-full px-3 text-sm font-black text-kx-subtle transition;
+    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-full px-3 text-sm font-bold text-kx-subtle transition duration-200;
   }
 
   .kx-discover-tab:hover {
@@ -1318,8 +1188,7 @@ body::before {
   }
 
   .kx-discover-tab[data-active="true"] {
-    @apply bg-kx-accent text-white;
-    box-shadow: 0 12px 28px -20px rgb(var(--kx-accent) / 0.78);
+    @apply bg-kx-accent text-kx-onAccent;
   }
 
   .kx-discover-row {
@@ -1375,7 +1244,6 @@ body::before {
   .kx-sidebar-nav-item[data-active="true"] svg {
     fill: none !important;
     stroke-width: 2.05;
-    filter: drop-shadow(0 3px 7px rgb(var(--kx-accent) / 0.14));
   }
 
   .kx-app-shell {
@@ -1384,28 +1252,22 @@ body::before {
     min-height: 100dvh;
   }
 
+  /* Single static accent wash over the flat page ground — barely-there
+     (≤0.04 alpha), no blur, no animation. This is the only atmosphere layer. */
   .kx-app-shell::before {
     content: "";
     position: fixed;
-    inset: -18vmax;
+    inset: 0;
     z-index: 0;
     pointer-events: none;
     background:
-      radial-gradient(42vmax 32vmax at 10% 18%, rgb(255 211 190 / 0.34), transparent 66%),
-      radial-gradient(38vmax 30vmax at 88% 14%, rgb(211 226 255 / 0.32), transparent 68%),
-      radial-gradient(40vmax 34vmax at 82% 84%, rgb(210 245 228 / 0.28), transparent 70%),
-      radial-gradient(34vmax 28vmax at 18% 82%, rgb(238 220 255 / 0.22), transparent 68%);
-    background-size: 118% 118%, 126% 126%, 122% 122%, 116% 116%;
-    filter: blur(34px) saturate(1.08);
-    opacity: 0.72;
-    transform: translate3d(0, 0, 0);
-    animation: ambientPrism 38s ease-in-out infinite alternate;
+      radial-gradient(90rem 46rem at 50% -14rem, rgb(var(--kx-accent) / 0.04), transparent 70%);
   }
 
   :root.dark .kx-app-shell::before,
   [data-theme="dark"] .kx-app-shell::before {
-    opacity: 0.18;
-    filter: blur(42px) saturate(1.12);
+    background:
+      radial-gradient(90rem 46rem at 50% -14rem, rgb(var(--kx-accent) / 0.03), transparent 70%);
   }
 
   .kx-shell-main {
@@ -1414,21 +1276,10 @@ body::before {
     -webkit-backdrop-filter: none;
   }
 
-  :root.dark .kx-shell-main,
-  [data-theme="dark"] .kx-shell-main {
-    background:
-      linear-gradient(180deg, rgb(24 26 32 / 0.52), rgb(var(--kx-bg) / 0.34)),
-      linear-gradient(135deg, rgb(180 83 54 / 0.08), transparent 58%);
-  }
-
   .kx-chat-page {
     height: var(--kx-visual-viewport-height, 100dvh);
     min-height: 0;
-    background:
-      radial-gradient(28rem 18rem at 10% 12%, rgb(255 211 190 / 0.18), transparent 68%),
-      radial-gradient(26rem 18rem at 90% 8%, rgb(211 226 255 / 0.16), transparent 70%),
-      radial-gradient(24rem 18rem at 78% 88%, rgb(210 245 228 / 0.14), transparent 70%),
-      transparent;
+    background: transparent;
   }
 
   .kx-chat-scroll {
@@ -1443,29 +1294,22 @@ body::before {
     position: sticky;
     bottom: 0;
     z-index: 35;
-    border-top: 1px solid rgb(var(--kx-stroke) / 0.18);
-    background:
-      radial-gradient(28rem 10rem at 12% 0%, rgb(255 211 190 / 0.22), transparent 72%),
-      radial-gradient(24rem 10rem at 92% 0%, rgb(211 226 255 / 0.20), transparent 72%),
-      linear-gradient(45deg, rgb(255 254 252 / 0.72), rgb(248 251 255 / 0.62), rgb(246 251 247 / 0.58));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.62),
-      0 -14px 40px -34px rgb(var(--kx-shadow) / 0.45);
-    backdrop-filter: blur(22px) saturate(1.16);
-    -webkit-backdrop-filter: blur(22px) saturate(1.16);
+    border-top: 1px solid rgb(var(--kx-stroke) / 0.20);
+    background: rgb(var(--kx-bg) / 0.88);
+    box-shadow: 0 -12px 34px -30px rgb(var(--kx-shadow) / 0.35);
+    backdrop-filter: blur(16px) saturate(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.05);
   }
 
   .kx-chat-compose-surface {
     display: flex;
     align-items: flex-end;
     gap: 0.5rem;
-    border-radius: 28px;
-    border: 1px solid rgb(var(--kx-stroke) / 0.20);
-    background: rgb(255 255 255 / 0.72);
+    border-radius: 24px;
+    border: 1px solid rgb(var(--kx-stroke) / 0.25);
+    background: rgb(var(--kx-surface) / 0.92);
     padding: 0.375rem;
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.74),
-      0 12px 34px -28px rgb(var(--kx-shadow) / 0.46);
+    box-shadow: 0 10px 30px -26px rgb(var(--kx-shadow) / 0.35);
   }
 
   .kx-chat-tool-button {
@@ -1515,9 +1359,9 @@ body::before {
     align-items: center;
     justify-content: center;
     border-radius: 999px;
-    color: white;
-    background: linear-gradient(135deg, rgb(34 140 126), rgb(var(--kx-accent)) 54%, rgb(12 78 70));
-    box-shadow: 0 12px 26px -16px rgb(var(--kx-accent) / 0.75);
+    color: rgb(var(--kx-on-accent));
+    background: rgb(var(--kx-accent));
+    box-shadow: 0 10px 24px -16px rgb(var(--kx-accent) / 0.55);
     transition: transform 180ms ease, filter 180ms ease, opacity 180ms ease;
   }
 
@@ -1534,37 +1378,25 @@ body::before {
     max-height: min(18rem, calc(var(--kx-visual-viewport-height, 100dvh) * 0.42));
     overflow-y: auto;
     border-radius: 24px;
-    border: 1px solid rgb(var(--kx-stroke) / 0.26);
-    background: rgb(255 255 255 / 0.86);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.72),
-      0 24px 60px -42px rgb(var(--kx-shadow) / 0.58);
-    backdrop-filter: blur(22px) saturate(1.12);
-    -webkit-backdrop-filter: blur(22px) saturate(1.12);
-  }
-
-  :root.dark .kx-chat-page,
-  [data-theme="dark"] .kx-chat-page {
-    background:
-      radial-gradient(28rem 18rem at 10% 12%, rgb(180 83 54 / 0.10), transparent 68%),
-      radial-gradient(26rem 18rem at 90% 8%, rgb(99 102 241 / 0.12), transparent 70%),
-      transparent;
+    border: 1px solid rgb(var(--kx-stroke) / 0.30);
+    background: rgb(var(--kx-surface) / 0.92);
+    box-shadow: 0 22px 60px -44px rgb(var(--kx-shadow) / 0.5);
+    backdrop-filter: blur(16px) saturate(1.05);
+    -webkit-backdrop-filter: blur(16px) saturate(1.05);
   }
 
   :root.dark .kx-chat-composer,
   [data-theme="dark"] .kx-chat-composer {
-    border-color: rgb(255 255 255 / 0.08);
-    background:
-      linear-gradient(180deg, rgb(24 26 32 / 0.80), rgb(18 20 26 / 0.74)),
-      radial-gradient(24rem 10rem at 92% 0%, rgb(99 102 241 / 0.10), transparent 72%);
+    border-color: rgb(var(--kx-stroke) / 0.30);
+    background: rgb(var(--kx-surface) / 0.85);
   }
 
   :root.dark .kx-chat-compose-surface,
   [data-theme="dark"] .kx-chat-compose-surface,
   :root.dark .kx-chat-emoji-panel,
   [data-theme="dark"] .kx-chat-emoji-panel {
-    border-color: rgb(255 255 255 / 0.10);
-    background: rgb(28 31 38 / 0.78);
+    border-color: rgb(var(--kx-stroke) / 0.35);
+    background: rgb(var(--kx-card) / 0.92);
   }
 
   .kx-grain {
@@ -1594,21 +1426,15 @@ body::before {
     @apply text-sm font-semibold tracking-tight text-kx-subtle px-1;
   }
 
+  /* Solid accent CTA. Foreground is the --kx-on-accent token (white on the
+     deep light-mode green, page ink on the dark-mode mint) so WCAG AA holds
+     in both themes without any per-theme override. */
   .kx-button-primary {
     @apply inline-flex items-center justify-center gap-1.5 rounded-full
-           bg-kx-accent text-white font-semibold text-sm px-4 h-9
+           bg-kx-accent text-kx-onAccent font-semibold text-sm px-4 h-9
            border border-kx-accent hover:brightness-110 active:scale-[0.97]
            transition-all duration-200 ease-out shadow-sm hover:shadow
            disabled:opacity-50 disabled:pointer-events-none;
-  }
-
-  /* H9: in light mode the accent is #147067 and white text is 5.9:1 (AA pass),
-     but in dark mode the accent lightens to mint (#5CBEB2) where white text is
-     only 2.22:1 (fails WCAG AA). Use the dark page ink (#101216) on the mint
-     fill instead — that pair is ~9:1. Higher specificity overrides text-white. */
-  :root.dark .kx-button-primary,
-  [data-theme="dark"] .kx-button-primary {
-    color: rgb(var(--kx-bg));
   }
 
   /* Skip-to-content link: off-screen until focused, then slides in. Lets
@@ -1659,11 +1485,10 @@ body::before {
   }
 
   .kx-input {
-    @apply w-full bg-kx-card/[0.88] border border-kx-stroke/95 rounded-kx-md px-3 h-11 text-kx-text
-           placeholder:text-kx-muted focus:outline-none focus:ring-2 focus:ring-kx-accent/40 focus:border-kx-accent/[0.55];
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.72),
-      0 1px 2px rgb(var(--kx-shadow) / 0.04);
+    @apply w-full bg-kx-surface border border-kx-stroke/70 rounded-kx-md px-3 h-11 text-kx-text
+           placeholder:text-kx-muted transition-colors duration-150
+           focus:outline-none focus:ring-2 focus:ring-kx-accent/40 focus:border-kx-accent/[0.55];
+    box-shadow: 0 1px 2px rgb(var(--kx-shadow) / 0.04);
   }
 
   .kx-textarea {
@@ -1687,7 +1512,7 @@ body::before {
   .kx-nav-tab {
     @apply relative inline-flex items-center justify-center py-3.5 px-3.5 sm:px-4
            text-[15px] font-medium whitespace-nowrap rounded-kx-md
-           text-kx-muted transition-all duration-250 ease-out kx-tap
+           text-kx-muted transition-all duration-200 ease-out kx-tap
            hover:text-kx-text hover:bg-kx-soft/70 active:scale-[0.97];
   }
   .kx-nav-tab[data-active="true"] {
@@ -1701,9 +1526,8 @@ body::before {
     bottom: -1px;
     height: 3px;
     border-radius: 4px 4px 0 0;
-    background: linear-gradient(90deg, rgb(var(--kx-accent)), rgb(var(--kx-accent) / 0.75));
-    box-shadow: 0 0 12px rgb(var(--kx-accent) / 0.45);
-    animation: kx-underline 240ms cubic-bezier(.16,1,.3,1) both;
+    background: rgb(var(--kx-accent));
+    animation: kx-underline 200ms cubic-bezier(.16,1,.3,1) both;
   }
 
   .kx-link {

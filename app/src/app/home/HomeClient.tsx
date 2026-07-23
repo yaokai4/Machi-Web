@@ -5,6 +5,7 @@ import { useInfiniteQuery, keepPreviousData, useQueryClient } from "@tanstack/re
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ArrowUp,
   Bell,
   ChevronDown,
   MapPin,
@@ -15,7 +16,8 @@ import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import type { FeedMode, KXPost, Paginated } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
-import { ErrorState, PostSkeleton } from "@/components/design/States";
+import { ErrorState } from "@/components/design/States";
+import { FeedSkeleton, FeedSkeletonList } from "@/components/feed/FeedSkeleton";
 import { ChannelEmptyState } from "@/components/feed/ChannelEmptyState";
 import dynamic from "next/dynamic";
 // Code-split the region picker (~385 lines) out of the home entry chunk —
@@ -36,11 +38,18 @@ export default function HomeClient() {
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
   const [scrolled, setScrolled] = useState(false);
+  // "New posts · back to top" pill: shows when a background refetch brings a
+  // new head post while the user is scrolled down the feed.
+  const [showNewPosts, setShowNewPosts] = useState(false);
   const [, startTransition] = useTransition();
   // Scroll-aware header: deepen the glass bar's shadow once the user scrolls
   // a little, so content reads as sliding *under* a floating bar.
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 8);
+    const onScroll = () => {
+      setScrolled(window.scrollY > 8);
+      // Back at the top the head post is visible anyway — retire the pill.
+      if (window.scrollY <= 8) setShowNewPosts(false);
+    };
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -144,6 +153,37 @@ export default function HomeClient() {
     ? feed.data?.pages.flatMap((p) => (Array.isArray(p.items) ? p.items : [])) ?? []
     : [];
 
+  // Detect a changed head post (staleTime refetch on refocus / tab return)
+  // while scrolled down → surface the "new posts" pill. Pagination appends at
+  // the tail so it never trips this; switching modes resets the baseline.
+  const firstItemId = items[0]?.id ?? null;
+  const firstIdRef = useRef<string | null>(null);
+  const trackedModeRef = useRef<FeedMode>(mode);
+  useEffect(() => {
+    if (trackedModeRef.current !== mode) {
+      trackedModeRef.current = mode;
+      firstIdRef.current = firstItemId;
+      setShowNewPosts(false);
+      return;
+    }
+    if (
+      firstItemId &&
+      firstIdRef.current &&
+      firstItemId !== firstIdRef.current &&
+      window.scrollY > 480
+    ) {
+      setShowNewPosts(true);
+    }
+    firstIdRef.current = firstItemId;
+  }, [firstItemId, mode]);
+
+  const backToTop = () => {
+    const reduceMotion =
+      typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
+    setShowNewPosts(false);
+  };
+
   const persistRegion = async (region: RegionInfo) => {
     try {
       const next = await api.updateRegionLanguage(regionAccountPatch(region));
@@ -184,7 +224,7 @@ export default function HomeClient() {
           <button
             type="button"
             onClick={() => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"))}
-            className="ml-auto inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgb(var(--kx-accent)/0.5)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9] dark:hover:bg-kx-accentSoft/55"
+            className="ml-auto inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-card/95 px-3 text-sm font-bold text-kx-text shadow-[0_14px_34px_-26px_rgb(var(--kx-accent)/0.45)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35"
             title={copy.switchRegion}
           >
             <span className="max-w-[7.5rem] truncate">
@@ -195,7 +235,7 @@ export default function HomeClient() {
           {user ? (
             <Link
               href="/notifications"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/95 text-kx-text shadow-[0_14px_32px_-26px_rgb(var(--kx-shadow)/0.5)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
               aria-label={t("nav_notifications")}
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
@@ -204,7 +244,7 @@ export default function HomeClient() {
             <button
               type="button"
               onClick={() => openAuthPrompt("generic")}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/95 text-kx-text shadow-[0_14px_32px_-26px_rgb(var(--kx-shadow)/0.5)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
               aria-label={t("nav_notifications")}
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
@@ -214,11 +254,17 @@ export default function HomeClient() {
         {/* Tabs + search merged into one slim row to reclaim vertical space:
             tabs on the left, a compact search pill to the right of 关注. */}
         <div className="flex items-center gap-2">
-          <div className="flex shrink-0 items-center gap-0.5 rounded-full border border-kx-stroke/40 bg-white/[0.82] p-1 shadow-[0_12px_28px_-24px_rgba(17,22,34,0.55)] ring-1 ring-white/[0.65] dark:bg-kx-card/[0.82] dark:ring-white/10">
+          {/* Segmented chips, same family as the iOS segmented control:
+              米白 capsule track, selected tab = solid 墨绿 pill. Token-driven
+              in both themes — no dark: patch colours. */}
+          <div className="flex shrink-0 items-center gap-0.5 rounded-full border border-kx-stroke/40 bg-kx-card/85 p-1 shadow-[0_12px_28px_-24px_rgb(var(--kx-shadow)/0.4)]">
             {MODES.map((m) => (
               <button
                 key={m.value}
-                className={clsx("kx-tab", "px-2 sm:px-3 h-8 text-sm")}
+                className={clsx(
+                  "kx-tab h-8 px-2.5 text-sm sm:px-3",
+                  "data-[active=true]:scale-100 data-[active=true]:bg-kx-accent data-[active=true]:text-kx-onAccent data-[active=true]:shadow-sm",
+                )}
                 data-active={mode === m.value}
                 onClick={() => setModeSmooth(m.value)}
               >
@@ -227,7 +273,7 @@ export default function HomeClient() {
             ))}
           </div>
           <form onSubmit={submitSearch} className="ml-auto min-w-0 flex-1 sm:max-w-[17rem]">
-            <label className="group flex h-9 items-center gap-2 rounded-full border border-kx-accent/[0.16] bg-white/[0.94] pl-3 pr-3 shadow-[0_12px_30px_-26px_rgba(17,22,34,0.6)] ring-1 ring-white/70 transition focus-within:border-kx-accent/[0.4] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:bg-kx-card/[0.88] dark:ring-white/10">
+            <label className="group flex h-9 items-center gap-2 rounded-full border border-kx-accent/[0.16] bg-kx-card/90 pl-3 pr-3 shadow-[0_12px_30px_-26px_rgb(var(--kx-shadow)/0.45)] transition focus-within:border-kx-accent/[0.4] focus-within:ring-2 focus-within:ring-kx-accent/20">
               <Search className="h-4 w-4 shrink-0 text-kx-accent" />
               <input
                 name="q"
@@ -248,12 +294,22 @@ export default function HomeClient() {
       </div>
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
+        {/* Always-mounted zero-height sticky anchor so the pill's appearance
+            never shifts the feed (space-y sees a constant sibling). Sits
+            below the two-row sticky header (z-30), above the cards. */}
+        <div className="pointer-events-none sticky top-[6.75rem] z-20 flex h-0 justify-center">
+          {showNewPosts ? (
+            <button
+              type="button"
+              className="kx-button-primary pointer-events-auto h-9 gap-1.5 px-4 shadow-kx-float animate-kx-slide-up"
+              onClick={backToTop}
+            >
+              <ArrowUp className="h-4 w-4" /> {copy.newPosts}
+            </button>
+          ) : null}
+        </div>
         {feed.isLoading ? (
-          <>
-            <PostSkeleton />
-            <PostSkeleton />
-            <PostSkeleton />
-          </>
+          <FeedSkeletonList />
         ) : feed.isError ? (
           <ErrorState title={copy.loadErrorTitle} onRetry={() => feed.refetch()} subtitle={copy.loadErrorSubtitle} />
         ) : items.length === 0 ? (
@@ -309,7 +365,7 @@ export default function HomeClient() {
           ))
         )}
         <div ref={sentinelRef} />
-        {feed.isFetchingNextPage ? <PostSkeleton /> : null}
+        {feed.isFetchingNextPage ? <FeedSkeleton /> : null}
         {feed.isFetchNextPageError && items.length > 0 ? (
           // Pagination failed mid-scroll: surface it with a retry instead of
           // silently truncating the feed (user would think "no more posts").
@@ -353,6 +409,7 @@ function homeCopy(locale: Locale) {
         loadErrorSubtitle: "The home feed cannot load at the moment. Please try again later.",
         loadMoreError: "Couldn't load more posts.",
         retry: "Retry",
+        newPosts: "New posts · Back to top",
         pickCityTitle: "Choose your current city",
         pickCitySubtitle: "The local feed uses your current region to show local updates, lived experience, Q&A, guide snippets, and event discussions.",
         pickCityAction: "Choose City",
@@ -367,6 +424,7 @@ function homeCopy(locale: Locale) {
         loadErrorSubtitle: "ホームフィードを現在読み込めません。時間を置いてもう一度お試しください。",
         loadMoreError: "これ以上読み込めませんでした。",
         retry: "再試行",
+        newPosts: "新着投稿 · トップへ",
         pickCityTitle: "現在の街を選択",
         pickCitySubtitle: "地域フィードは現在の地域をもとに、ローカル情報、体験談、Q&A、ガイド、イベントの会話を表示します。",
         pickCityAction: "街を選択",
@@ -381,6 +439,7 @@ function homeCopy(locale: Locale) {
         loadErrorSubtitle: "首頁內容暫時無法載入，請稍後再試。",
         loadMoreError: "無法載入更多貼文。",
         retry: "重試",
+        newPosts: "有新貼文 · 回到頂部",
         pickCityTitle: "選擇目前城市",
         pickCitySubtitle: "同城流會根據你的目前地區展示本地動態、經驗分享、問答、攻略片段和活動討論。",
         pickCityAction: "選擇城市",
@@ -395,6 +454,7 @@ function homeCopy(locale: Locale) {
         loadErrorSubtitle: "首页内容暂时无法加载，请稍后再试。",
         loadMoreError: "无法加载更多帖子。",
         retry: "重试",
+        newPosts: "有新帖 · 回到顶部",
         pickCityTitle: "选择当前城市",
         pickCitySubtitle: "同城流会根据你的当前地区展示本地动态、经验分享、问答、攻略片段和活动讨论。",
         pickCityAction: "选择城市",

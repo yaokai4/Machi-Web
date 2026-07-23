@@ -5,43 +5,39 @@ import { useAuthPrompt, useCompose, useSession } from "@/lib/store";
 import { type ContentType } from "@/lib/types";
 import { useI18n, type Locale } from "@/lib/i18n";
 
-// Per-channel visual identity (icon + CTA tint). Language-agnostic so it
-// stays in one place while the copy below is localized per locale.
-interface Visual {
-  icon: string;
-  tint: string;
-}
-
+// Per-channel icon. The old per-channel CTA tint (24 raw Tailwind hues) is
+// gone — every CTA is the single 墨绿 accent so empty states read as one
+// product; the emoji alone carries the channel identity.
 interface Copy {
   title: string;
   body: string;
   cta: string;
 }
 
-const VISUAL: Partial<Record<ContentType, Visual>> = {
-  secondhand: { icon: "🏷️", tint: "bg-emerald-500" },
-  housing: { icon: "🏠", tint: "bg-blue-500" },
-  roommate: { icon: "👥", tint: "bg-cyan-500" },
-  job_post: { icon: "💼", tint: "bg-violet-500" },
-  job_seek: { icon: "🧑‍💻", tint: "bg-emerald-600" },
-  meetup: { icon: "🤝", tint: "bg-orange-500" },
-  dining: { icon: "🍱", tint: "bg-rose-500" },
-  event: { icon: "📅", tint: "bg-purple-500" },
-  guide: { icon: "📖", tint: "bg-teal-500" },
-  news: { icon: "📰", tint: "bg-sky-500" },
-  local_info: { icon: "📣", tint: "bg-orange-600" },
-  question: { icon: "❓", tint: "bg-indigo-500" },
-  service: { icon: "🛠️", tint: "bg-amber-600" },
-  merchant: { icon: "🏪", tint: "bg-teal-600" },
-  coupon: { icon: "🎟️", tint: "bg-pink-500" },
-  warning: { icon: "⚠️", tint: "bg-red-500" },
-  dynamic: { icon: "💬", tint: "bg-blue-500" },
-  image_post: { icon: "🖼️", tint: "bg-indigo-500" },
-  long_post: { icon: "📝", tint: "bg-slate-500" },
-  rant: { icon: "📢", tint: "bg-pink-600" },
-  referral: { icon: "🪪", tint: "bg-indigo-600" },
-  poll: { icon: "📊", tint: "bg-sky-600" },
-  anonymous: { icon: "🌙", tint: "bg-slate-600" },
+const ICON: Partial<Record<ContentType, string>> = {
+  secondhand: "🏷️",
+  housing: "🏠",
+  roommate: "👥",
+  job_post: "💼",
+  job_seek: "🧑‍💻",
+  meetup: "🤝",
+  dining: "🍱",
+  event: "📅",
+  guide: "📖",
+  news: "📰",
+  local_info: "📣",
+  question: "❓",
+  service: "🛠️",
+  merchant: "🏪",
+  coupon: "🎟️",
+  warning: "⚠️",
+  dynamic: "💬",
+  image_post: "🖼️",
+  long_post: "📝",
+  rant: "📢",
+  referral: "🪪",
+  poll: "📊",
+  anonymous: "🌙",
 };
 
 // Localized empty-state copy for every channel. Non-Chinese users must
@@ -151,7 +147,7 @@ const TEXT: Record<Locale, Partial<Record<ContentType, Copy>>> = {
 };
 
 // Locale-aware generic fallback for any content type that has no entry
-// above (defensive — VISUAL/TEXT currently cover every ContentType).
+// above (defensive — ICON/TEXT currently cover every ContentType).
 function fallbackCopy(locale: Locale): Copy {
   switch (locale) {
     case "en":
@@ -173,13 +169,13 @@ export function ChannelEmptyState({ contentType }: { contentType: ContentType })
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const { locale } = useI18n();
-  const visual = VISUAL[contentType] || { icon: "✨", tint: "bg-kx-accent" };
+  const icon = ICON[contentType] || "✨";
   const copy = TEXT[locale]?.[contentType] || TEXT["zh-Hans"][contentType] || fallbackCopy(locale);
 
   return (
     <div className="kx-card flex flex-col items-center px-6 py-10 text-center">
-      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-kx-soft text-3xl ring-1 ring-kx-stroke/50 shadow-[0_16px_38px_-30px_rgba(17,22,34,0.65)]">
-        <span aria-hidden="true">{visual.icon}</span>
+      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-kx-soft text-3xl ring-1 ring-kx-stroke/50 shadow-[0_16px_38px_-30px_rgb(var(--kx-shadow)/0.4)]">
+        <span aria-hidden="true">{icon}</span>
       </div>
       <div className="text-base font-bold text-kx-text">{copy.title}</div>
       <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-kx-muted">{copy.body}</div>
@@ -197,7 +193,7 @@ export function ChannelEmptyState({ contentType }: { contentType: ContentType })
             initialContentType: contentType,
           });
         }}
-        className={`mt-5 inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-bold text-white shadow-[0_18px_34px_-20px_rgba(17,22,34,0.7)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_22px_40px_-20px_rgba(17,22,34,0.75)] active:translate-y-0 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-kx-card focus-visible:ring-kx-accent/50 ${visual.tint}`}
+        className="mt-5 inline-flex h-11 items-center gap-2 rounded-full bg-kx-accent px-5 text-sm font-bold text-kx-onAccent shadow-[0_18px_34px_-22px_rgb(var(--kx-accent)/0.55)] transition duration-200 hover:brightness-110 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-kx-card focus-visible:ring-kx-accent/50"
       >
         <PlusCircle className="h-4 w-4" />
         {copy.cta}

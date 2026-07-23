@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import { CalendarClock } from "lucide-react";
 import { guide } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
-import { InlineLoading, ErrorState } from "@/components/design/States";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 import {
   ExamCountdownBar,
@@ -12,6 +11,8 @@ import {
   JlptNarrow,
   JlptPageHeader,
   JlptStateCard,
+  JlptPageSkeleton,
+  JlptErrorCard,
   type Tri,
 } from "../JlptKit";
 
@@ -47,16 +48,18 @@ export function ExamDatesClient() {
         />
 
         {q.isLoading ? (
-          <div className="mt-6">
-            <InlineLoading />
-          </div>
+          <JlptPageSkeleton t={t} variant="rows" />
         ) : q.isError ? (
-          <div className="mt-6">
-            <ErrorState />
-          </div>
+          <JlptErrorCard
+            t={t}
+            onRetry={() => q.refetch()}
+            retrying={q.isFetching}
+            title={t("日程加载失败", "日程を読み込めませんでした", "Couldn't load the schedule")}
+          />
         ) : (
           <div className="mt-6">
-            <ExamCountdownBar t={t} countdown={q.data?.countdown} href="/guide/jlpt/exam-dates" />
+            {/* Static banner — this IS the exam-dates page, no self-link. */}
+            <ExamCountdownBar t={t} countdown={q.data?.countdown} href={null} />
 
             {!q.data?.examDates?.length ? (
               <JlptStateCard
@@ -89,24 +92,24 @@ export function ExamDatesClient() {
                         <CalendarClock className="h-5 w-5" />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="flex items-center gap-2 text-[15px] font-black text-[rgb(var(--kx-living-ink))]">
+                        <p className="flex items-center gap-2 text-[15px] font-bold text-[rgb(var(--kx-living-ink))]">
                           {d.sessionLabel || d.examDate}
                           {!upcoming ? (
-                            <span className="rounded-md bg-[rgb(var(--kx-living-ink))]/[0.06] px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
+                            <span className="rounded-md bg-[rgb(var(--kx-living-ink))]/[0.06] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
                               {t("已过", "終了", "Past")}
                             </span>
                           ) : null}
                         </p>
-                        <p className="mt-1 text-xs font-bold text-[rgb(var(--kx-living-muted))]">
+                        <p className="mt-1 text-xs font-medium tabular-nums text-[rgb(var(--kx-living-muted))]">
                           {t("考试日", "試験日", "Exam")}: {d.examDate || "—"}
                         </p>
                         {d.regOpenDate || d.regCloseDate ? (
-                          <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+                          <p className="mt-0.5 text-[11px] font-medium tabular-nums text-[rgb(var(--kx-living-muted))]">
                             {t("报名", "申込", "Registration")}: {d.regOpenDate || "?"} — {d.regCloseDate || "?"}
                           </p>
                         ) : null}
                         {d.note ? (
-                          <p className="mt-1.5 text-[11px] font-medium leading-relaxed text-[rgb(var(--kx-living-muted))]">{d.note}</p>
+                          <p className="mt-1.5 text-[11px] leading-relaxed text-[rgb(var(--kx-living-muted))]">{d.note}</p>
                         ) : null}
                       </div>
                     </div>

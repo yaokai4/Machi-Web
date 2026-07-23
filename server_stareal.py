@@ -37,6 +37,34 @@ AMENITY_LABELS: dict[str, str] = {
 }
 _AMENITY_GROUPS = ("flatBaseInfo", "flatOutInfo", "flatInInfo", "flatMoreInfo")
 
+# ── 布尔 facet 推断(高置信)────────────────────────────────────────────────
+# 整租频道的「可养宠物 / 家具家电」筛选是对 listing_attributes 的严格 EXISTS
+# 匹配 —— 只写 amenities 自由文本的话,这两个筛选在 partner 库存上永远 0 结果。
+# furnished 只认下面三个高置信关键词(宁缺毋滥:误报会让用户按「家具家电」
+# 筛出实际不带家具的房源);pet_allowed 只认官网设施组里明确的 可养狗/可养猫。
+# backfill_stareal_listing_attrs.py 回填存量时 import 同一份口径,保持一致。
+FURNISHED_KEYWORDS: tuple[str, ...] = ("家具家電付き", "家電付き", "家具付き")
+PET_AMENITY_LABELS: tuple[str, ...] = ("可养狗", "可养猫")
+
+
+def infer_boolean_attrs(*, amenities: Any = (), texts: Iterable[str] = ()) -> dict[str, bool]:
+    """从设施列表/文本推断 pet_allowed / furnished(只输出命中的 key)。
+
+    ``amenities`` 接受列表或「，」分隔文本(decode_amenities 的两种落点);
+    ``texts`` 是标题/描述/badges 等自由文本。「家具・家電付き」等中点变体
+    也按高置信命中:先去掉中点再匹配。"""
+    out: dict[str, bool] = {}
+    if isinstance(amenities, str):
+        amenity_list = [a.strip() for a in re.split(r"[，,]+", amenities) if a.strip()]
+    else:
+        amenity_list = [str(a).strip() for a in (amenities or ())]
+    if any(a in PET_AMENITY_LABELS for a in amenity_list):
+        out["pet_allowed"] = True
+    haystack = "\n".join(str(t) for t in texts if t).replace("・", "").replace("･", "")
+    if any(kw in haystack for kw in FURNISHED_KEYWORDS):
+        out["furnished"] = True
+    return out
+
 # stareal 官网的三个板块 -> Machi listing_intent。
 # 注意:列表项里的 `bri` 字段是反的/不可信(buy 项 bri='rent'),
 # 一律以我们请求时用的 house_type 为准。
@@ -417,6 +445,18 @@ def map_item(house_type: str, item: dict[str, Any], *, full_res: bool = True,
               if isinstance(t, dict) and str(t.get("title") or "").strip()]
     recommended = bool(item.get("isVip")) or any("推荐" in b or "推薦" in b for b in badges)
 
+    description = strip_html(item.get("detail"))
+
+    # 布尔 facet(pet_allowed / furnished):这两个 key 只在 rental 的属性白名单
+    # 里(买房/投资 vertical 会在归一时被丢弃),所以只对长租 intent 写入。
+    # 布尔值经 partner 管线 _attr_text_type 落库为 value='true'/value_type='bool',
+    # 与 /api/listings 的 truthy 过滤直接对得上。
+    if intent == "rent":
+        attrs.update(infer_boolean_attrs(
+            amenities=amenities,
+            texts=(title, description, *badges),
+        ))
+
     category = _CATEGORY_MAP.get(flat_type, flat_type)
 
     return {
@@ -428,7 +468,7 @@ def map_item(house_type: str, item: dict[str, Any], *, full_res: bool = True,
         "location_text": address,
         "latitude": latitude,
         "longitude": longitude,
-        "description": strip_html(item.get("detail")),
+        "description": description,
         "category": category,
         "status": "published",
         "attrs": attrs,

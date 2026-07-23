@@ -108,6 +108,7 @@ import json
 import mimetypes
 import os
 import queue
+import random
 import re
 import secrets
 import shutil
@@ -1168,6 +1169,67 @@ def bump_post_counter_for_kind(conn: sqlite3.Connection, post_id: str, kind: str
     column = _POST_COUNTER_COLUMNS.get(kind)
     if column:
         bump_post_counter(conn, post_id, column, delta)
+
+
+# Heat weights for the incremental weighted_interaction_score write path. Must
+# stay in lock-step with the kind_heat CASE in _reconcile_weighted_interaction_
+# score (like=1 / repost=5 / bookmark=4) — the reconcile is the authority, this
+# is its real-time approximation.
+_WEIGHTED_INTERACTION_KIND_HEAT = {"like": 1.0, "repost": 5.0, "bookmark": 4.0}
+
+
+def bump_weighted_interaction_score(
+    conn: sqlite3.Connection,
+    post_id: str,
+    kind: str,
+    direction: int,
+    actor_created_at: str = "",
+) -> None:
+    """Incrementally adjust posts.weighted_interaction_score on a like/repost/
+    bookmark write, so hot_score sees the engagement on the NEXT refresher pass
+    (~60s) instead of waiting for the 6h reconcile (which previously made 热榜
+    react to a like burst up to 6h late).
+
+    Approximation by design: applies the kind heat × the new-account factor
+    (0.3 when the interacting account is <48h old — same rule as the reconcile)
+    but NOT the per-(user,author) 互刷 marginal decay — a like-ring can therefore
+    overestimate for at most one reconcile window, after which
+    _reconcile_weighted_interaction_score trues the column up with the full
+    marginal-decay formula. Overestimating is acceptable; underestimating (the
+    old 6h lag) was the bug. Decrements clamp at 0 via CASE (backend-agnostic,
+    same pattern as bump_post_counter). Best-effort: never blocks the write."""
+    heat = _WEIGHTED_INTERACTION_KIND_HEAT.get(kind)
+    if not heat or direction == 0:
+        return
+    factor = 1.0
+    try:
+        if actor_created_at:
+            acct = datetime.fromisoformat(str(actor_created_at).replace("Z", "+00:00"))
+            if acct.tzinfo is None:
+                acct = acct.replace(tzinfo=timezone.utc)
+            age_h = (datetime.now(timezone.utc) - acct).total_seconds() / 3600.0
+            # Negative age (clock skew / bad data) is treated as normal, exactly
+            # like the reconcile's account_factor.
+            if 0.0 <= age_h < 48.0:
+                factor = 0.3
+    except Exception:
+        factor = 1.0
+    delta = heat * factor
+    try:
+        if direction > 0:
+            conn.execute(
+                "UPDATE posts SET weighted_interaction_score = COALESCE(weighted_interaction_score, 0) + ? WHERE id = ?",
+                (delta, post_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE posts SET weighted_interaction_score = CASE "
+                "WHEN COALESCE(weighted_interaction_score, 0) >= ? THEN weighted_interaction_score - ? ELSE 0 END "
+                "WHERE id = ?",
+                (delta, delta, post_id),
+            )
+    except Exception:
+        ERR_LOG.warning("bump_weighted_interaction_score failed post=%s kind=%s dir=%s", post_id, kind, direction)
 
 
 def apply_review_to_aggregate(conn: sqlite3.Connection, product_id: str,
@@ -3240,6 +3302,157 @@ def _saved_search_category_set(s: dict[str, Any]) -> set[str]:
     return {c.strip() for c in str(raw or "").split(",") if c.strip()}
 
 
+# 保存搜索 v2:filter_json 里的属性(attr_*)与价格(min/max_price)条件。
+# 解析与比对语义必须和 /api/listings 的查询端保持一字不差(truthy 值展开、
+# delivery_method 家族特例、attr_gte_ 数值下限、价格 NULL 放行),否则会出现
+# 「频道里筛得到、订阅却不推」或反过来的口径漂移 —— 两端共用下面两个 helper。
+_LISTING_ATTR_TRUTHY_TEXTS: tuple[str, ...] = ("true", "1", "yes", "on")
+
+
+def _sqlite_cast_real(text: Any) -> float:
+    """模拟 SQL 的 CAST(value AS REAL):取前导数字,解析不出就是 0.0。
+    查询端 attr_gte_ 用的就是 CAST,匹配端必须同口径('6人'→6.0,'abc'→0.0)。"""
+    m = re.match(r"\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", str(text or ""))
+    if not m or not m.group(0).strip():
+        return 0.0
+    try:
+        return float(m.group(0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def saved_search_filter_criteria(s: dict[str, Any]) -> dict[str, Any]:
+    """把 saved_searches.filter_json 解析成结构化的匹配条件。
+
+    接受两种客户端形状(iOS 直接打包查询参数,Web 可能嵌套):
+      顶层 "attr_<key>" / "attr_gte_<key>",或 "attrs"/"attributes" 嵌套 dict
+      (裸 key,gte_ 前缀表示数值下限);价格键 min_price/minPrice/max_price/maxPrice。
+    返回 {} 表示没有任何 v2 条件(v1 行为零变化)。"""
+    raw = s.get("filter_json")
+    if isinstance(raw, dict):
+        filters: Any = raw
+    else:
+        try:
+            filters = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(filters, dict):
+        return {}
+    candidates: list[tuple[str, Any]] = []
+    for key, value in filters.items():
+        if isinstance(key, str) and key.startswith("attr_"):
+            candidates.append((key[len("attr_"):], value))
+    nested = filters.get("attrs")
+    if not isinstance(nested, dict):
+        nested = filters.get("attributes")
+    if isinstance(nested, dict):
+        candidates.extend((str(k), v) for k, v in nested.items())
+    attr_eq: dict[str, list[str]] = {}
+    attr_gte: dict[str, float] = {}
+    for key, value in candidates:
+        key = str(key or "").strip()
+        is_gte = key.startswith("gte_")
+        if is_gte:
+            key = key[len("gte_"):].strip()
+        if not key:
+            continue
+        if is_gte:
+            try:
+                attr_gte[key] = float(str(value).strip())
+            except (TypeError, ValueError):
+                continue
+        else:
+            if isinstance(value, (list, tuple)):
+                values = [str(v).strip() for v in value if str(v).strip()]
+            else:
+                values = [v.strip() for v in re.split(r"[,，]+", str(value or "")) if v.strip()]
+            values = values[:8]  # 与查询端同上限
+            if values:
+                attr_eq[key] = values
+
+    def _price(*keys: str) -> float | None:
+        for k in keys:
+            if k in filters:
+                try:
+                    return float(str(filters[k]).strip())
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    out: dict[str, Any] = {}
+    if attr_eq:
+        out["attr_eq"] = attr_eq
+    if attr_gte:
+        out["attr_gte"] = attr_gte
+    min_price = _price("min_price", "minPrice")
+    if min_price is not None:
+        out["min_price"] = min_price
+    max_price = _price("max_price", "maxPrice")
+    if max_price is not None:
+        out["max_price"] = max_price
+    return out
+
+
+def listing_matches_saved_filters(
+    criteria: dict[str, Any],
+    listing_type: str,
+    price: Any,
+    attributes: dict[str, Any] | None,
+) -> bool:
+    """`saved_search_filter_criteria` 的匹配半边,语义逐条对齐 api_listings:
+    · 白名单外的 attr key 静默忽略(查询端同样直接 continue);
+    · truthy 值展开成 ('true','1','yes','on') 任意其一即命中;
+    · delivery_method 的 pickup/shipping 额外接受 pickup_or_shipping;
+    · pickup_available/shipping_available 为 truthy 时也接受对应 delivery_method;
+    · attr_gte_ 按 CAST AS REAL 语义,属性行缺失 = 不匹配;
+    · 价格与查询端 (price IS NULL OR ...) 一致:无价(面议)放行。"""
+    if not criteria:
+        return True
+    allowed = LISTING_ATTRIBUTE_KEYS.get(str(listing_type or "").strip().lower(), set())
+    attrs = {str(k): str(v if v is not None else "") for k, v in (attributes or {}).items()}
+    for key, threshold in (criteria.get("attr_gte") or {}).items():
+        if key not in allowed:
+            continue
+        if key not in attrs:
+            return False
+        if _sqlite_cast_real(attrs[key]) < threshold:
+            return False
+    for key, values in (criteria.get("attr_eq") or {}).items():
+        if key not in allowed:
+            continue
+        normalized = {v.lower() for v in values}
+        expanded: list[str] = []
+        for v in values:
+            if v.lower() in _LISTING_ATTR_TRUTHY_TEXTS:
+                expanded.extend(_LISTING_ATTR_TRUTHY_TEXTS)
+            else:
+                expanded.append(v)
+        if key == "delivery_method" and ({"pickup", "shipping"} & normalized):
+            expanded.append("pickup_or_shipping")
+        truthy_requested = bool(normalized.intersection(_LISTING_ATTR_TRUTHY_TEXTS))
+        value = attrs.get(key)
+        if key in {"pickup_available", "shipping_available"} and truthy_requested:
+            delivery_values = ("pickup", "pickup_or_shipping") if key == "pickup_available" else ("shipping", "pickup_or_shipping")
+            if (value is not None and value in expanded) or (attrs.get("delivery_method") in delivery_values):
+                continue
+            return False
+        if value is None or value not in expanded:
+            return False
+    min_price = criteria.get("min_price")
+    max_price = criteria.get("max_price")
+    if price is not None and (min_price is not None or max_price is not None):
+        try:
+            price_val = float(price)
+        except (TypeError, ValueError):
+            price_val = None
+        if price_val is not None:
+            if min_price is not None and price_val < float(min_price):
+                return False
+            if max_price is not None and price_val > float(max_price):
+                return False
+    return True
+
+
 def notify_favorite_listing_change(
     conn: sqlite3.Connection,
     listing_id: str,
@@ -3305,10 +3518,11 @@ def notify_favorite_listing_change(
 def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any]) -> int:
     """Best-effort: notify every user whose saved search matches this freshly
     published listing. NEVER raises — a saved-search bug must not break listing
-    publishing. Returns the number of users notified. Filter-level (attribute)
-    matching is intentionally deferred to v2; v1 matches on vertical + location
-    (metro-circle aware) + keyword + category (+ an optional `categories` set
-    inside filter_json, used by the web homestay/services-section tabs)."""
+    publishing. Returns the number of users notified. v1 matched vertical +
+    location (metro-circle aware) + keyword + category (+ an optional
+    `categories` set inside filter_json); v2 additionally matches the
+    filter_json attribute (attr_* / attr_gte_*) and price criteria with the
+    exact /api/listings query semantics (see listing_matches_saved_filters)."""
     try:
         listing_id = listing.get("id")
         if not listing_id:
@@ -3326,6 +3540,15 @@ def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any
         # both streams, and historically Web subscribed 'job' while iOS
         # subscribed 'hiring' — either row must match either listing type.
         ltype_alias = {"job": "hiring", "hiring": "job"}.get(ltype, ltype)
+        # 发布链路传进来的是 city_listings 裸行(不含属性),v2 属性匹配需要
+        # 一次性把该 listing 的属性行拉出来(单条索引查询,发布路径开销可忽略)。
+        listing_attrs = {
+            str(ar["key"]): str(ar["value"] if ar["value"] is not None else "")
+            for ar in conn.execute(
+                "SELECT key, value FROM listing_attributes WHERE listing_id = ?",
+                (listing_id,),
+            )
+        }
         rows = list(conn.execute(
             """
             SELECT * FROM saved_searches
@@ -3367,6 +3590,11 @@ def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any
                 continue
             cat_set = _saved_search_category_set(s)
             if cat_set and l_category not in cat_set:
+                continue
+            # v2:filter_json 里的 attr_*/价格条件,与 /api/listings 同语义。
+            criteria = saved_search_filter_criteria(s)
+            if criteria and not listing_matches_saved_filters(
+                    criteria, ltype, listing.get("price"), listing_attrs):
                 continue
             # Dedupe: at most one saved-search notification per (user, listing).
             if conn.execute(
@@ -3483,17 +3711,34 @@ def run_saved_search_digests(conn: sqlite3.Connection) -> int:
                 params.append(vertical)
             cands = list(conn.execute(
                 "SELECT id, title, description, category, type, city_slug, region_code, "
-                "country_code, seller_user_id, "
+                "country_code, seller_user_id, price, "
                 "COALESCE(NULLIF(published_at, ''), created_at) AS pub "
                 "FROM city_listings WHERE " + " AND ".join(where) +
                 " ORDER BY pub DESC LIMIT 200",
                 params,
             ))
-            matches = [
-                dict(c) for c in cands
-                if dict(c).get("seller_user_id") != uid
-                and _saved_search_matches_listing(s, dict(c))
-            ]
+            # v2 属性/价格条件与即时通知端同一套 helper;属性行只对通过了
+            # 基础匹配(地域/关键词/类目)的候选按需拉取,digest 扫描量可控。
+            criteria = saved_search_filter_criteria(s)
+            matches: list[dict[str, Any]] = []
+            for c in cands:
+                cd = dict(c)
+                if cd.get("seller_user_id") == uid:
+                    continue
+                if not _saved_search_matches_listing(s, cd):
+                    continue
+                if criteria:
+                    cand_attrs = {
+                        str(ar["key"]): str(ar["value"] if ar["value"] is not None else "")
+                        for ar in conn.execute(
+                            "SELECT key, value FROM listing_attributes WHERE listing_id = ?",
+                            (cd.get("id"),),
+                        )
+                    }
+                    if not listing_matches_saved_filters(
+                            criteria, str(cd.get("type") or ""), cd.get("price"), cand_attrs):
+                        continue
+                matches.append(cd)
             # Always advance last_notified_at to reset the 20h window, even with
             # zero matches — otherwise an empty search re-scans every sweep.
             if not matches:
@@ -8856,6 +9101,127 @@ def public_listing_attributes(listing_type: str, attrs: Any) -> dict[str, Any]:
     if listing_type == "rental":
         cleaned.pop("foreigners_allowed", None)
     return cleaned
+
+
+# ── listing facet 计数 / 0 结果放宽 ──────────────────────────────────────────
+# 筛选面板选项旁的计数徽标(facets=1)只对「客户端 chips 实际在用的」可数格化
+# key 开计数:LISTING_ATTRIBUTE_KEYS 白名单里还有 source_url/amenities/menu 等
+# 自由文本或 JSON key,GROUP BY 它们会产出上千个 value 桶,既无意义又拖慢查询。
+# 这里是白名单的真子集,新增 chips 时在此登记即可。
+LISTING_FACET_COUNT_KEYS: dict[str, tuple[str, ...]] = {
+    "rental": ("furnished", "pet_allowed", "share_allowed", "short_term_allowed",
+               "layout", "building_type"),
+    "for_sale": ("layout", "building_type", "needs_renovation"),
+    "secondhand": ("condition", "delivery_method", "listing_mode", "price_negotiable",
+                   "pickup_available", "shipping_available"),
+    "local_service": ("service_type", "room_type", "booking_required"),
+    "job": ("employment_type", "japanese_level", "salary_type", "visa_support", "remote_ok"),
+    "hiring": ("employment_type", "japanese_level", "salary_type", "visa_support", "remote_ok"),
+}
+
+# 0 结果放宽提示里 attr 条件的人话标签(与 iOS 筛选 chips 文案对齐);
+# 不在表里的 key 直接回显 key 本身,客户端可再本地化。
+LISTING_RELAXATION_ATTR_LABELS: dict[str, str] = {
+    "furnished": "家具家电", "pet_allowed": "可养宠物", "share_allowed": "可合租",
+    "short_term_allowed": "可短租", "layout": "户型", "building_type": "建物类型",
+    "condition": "新旧程度", "delivery_method": "交易方式", "listing_mode": "发布类型",
+    "price_negotiable": "可议价", "pickup_available": "可自取", "shipping_available": "可邮寄",
+    "max_guests": "可住人数", "room_type": "房型",
+    "japanese_level": "日语要求", "employment_type": "雇佣形态", "remote_ok": "可远程",
+    "visa_support": "签证支持",
+}
+
+# facet 计数 60s 进程内缓存:同一组筛选条件的重复请求(用户在面板里连续开关
+# chips)直接命中,不重跑 GROUP BY。key 是 (type + 基础 clauses + 参数) 的 JSON。
+_LISTING_FACET_CACHE: dict[str, tuple[float, dict[str, dict[str, int]]]] = {}
+_LISTING_FACET_CACHE_LOCK = threading.Lock()
+_LISTING_FACET_CACHE_TTL = 60.0
+_LISTING_FACET_CACHE_MAX = 256
+_LISTING_FACET_MAX_VALUES = 40
+
+
+def compute_listing_facet_counts(
+    conn: sqlite3.Connection,
+    listing_type: str,
+    base_clauses: list[str],
+    base_params: list[Any],
+    attr_slots: list[dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    """当前查询条件下,每个 facet key 的 value→命中条数(disjunctive 语义)。
+
+    disjunctive:某 key 自己已被选中时,该 key 的计数要把「自己的 clause」摘掉
+    再数(否则「家具家电」选中后其余选项全变 0,面板失去探索性);其它未选中
+    key 共享一条 GROUP BY 查询。base_clauses/base_params 是不含游标 clause 的
+    基础查询快照;attr_slots 是 api_listings 登记的 attr clause 槽位(含
+    clause 下标与参数区间)。索引:子查询命中 city_listings 既有过滤索引,外层
+    按 listing_id 命中 UNIQUE(listing_id, key) 的自动索引,再配合
+    idx_listing_attributes_key(key, value),无需新索引。SQLite/PG 通用写法。"""
+    facet_keys = [k for k in LISTING_FACET_COUNT_KEYS.get(listing_type, ())
+                  if k in LISTING_ATTRIBUTE_KEYS.get(listing_type, set())]
+    if not facet_keys:
+        return {}
+    cache_key = json.dumps(
+        [listing_type, base_clauses, [str(p) for p in base_params],
+         sorted((s.get("attr_key") or "", s.get("clause_at") or 0) for s in attr_slots)],
+        ensure_ascii=False,
+    )
+    now_ts = time.time()
+    with _LISTING_FACET_CACHE_LOCK:
+        hit = _LISTING_FACET_CACHE.get(cache_key)
+        if hit and hit[0] > now_ts:
+            return hit[1]
+
+    counts: dict[str, dict[str, int]] = {}
+    constrained: dict[str, list[dict[str, Any]]] = {}
+    for slot in attr_slots:
+        key = str(slot.get("attr_key") or "")
+        if key:
+            constrained.setdefault(key, []).append(slot)
+
+    def _run(keys: list[str], cl: list[str], pr: list[Any]) -> None:
+        placeholders = ",".join("?" * len(keys))
+        # 外层别名 fa 避开 clause 里 EXISTS 子查询自用的 la;子查询形式(而非
+        # JOIN)避免 id/updated_at 等两表同名列的歧义。
+        sql = (
+            "SELECT fa.key AS k, fa.value AS v, COUNT(*) AS n FROM listing_attributes fa "
+            f"WHERE fa.key IN ({placeholders}) AND fa.listing_id IN "
+            f"(SELECT id FROM city_listings WHERE {' AND '.join(cl)}) "
+            "GROUP BY fa.key, fa.value"
+        )
+        for row in conn.execute(sql, [*keys, *pr]):
+            value = str(row["v"] if row["v"] is not None else "")
+            if value.lower() in _LISTING_ATTR_TRUTHY_TEXTS:
+                # 布尔属性的历史拼写('1'/'yes'/'on')并进 'true' 桶,与查询端
+                # truthy 展开语义一致 —— 客户端只需认 'true' 一个键。
+                value = "true"
+            bucket = counts.setdefault(str(row["k"]), {})
+            bucket[value] = bucket.get(value, 0) + int(row["n"] or 0)
+
+    free_keys = [k for k in facet_keys if k not in constrained]
+    if free_keys:
+        _run(free_keys, base_clauses, base_params)
+    for key in facet_keys:
+        slots = constrained.get(key)
+        if not slots:
+            continue
+        drop_idx = {s["clause_at"] for s in slots}
+        cl = [c for i, c in enumerate(base_clauses) if i not in drop_idx]
+        pr = list(base_params)
+        for s in sorted(slots, key=lambda x: -int(x["param_at"])):
+            del pr[int(s["param_at"]):int(s["param_at"]) + int(s["param_n"])]
+        _run([key], cl, pr)
+    for key, bucket in list(counts.items()):
+        if len(bucket) > _LISTING_FACET_MAX_VALUES:
+            top = sorted(bucket.items(), key=lambda kv: (-kv[1], kv[0]))[:_LISTING_FACET_MAX_VALUES]
+            counts[key] = dict(top)
+    with _LISTING_FACET_CACHE_LOCK:
+        if len(_LISTING_FACET_CACHE) >= _LISTING_FACET_CACHE_MAX:
+            for k in [k for k, v in _LISTING_FACET_CACHE.items() if v[0] <= now_ts]:
+                _LISTING_FACET_CACHE.pop(k, None)
+            if len(_LISTING_FACET_CACHE) >= _LISTING_FACET_CACHE_MAX:
+                _LISTING_FACET_CACHE.clear()
+        _LISTING_FACET_CACHE[cache_key] = (now_ts + _LISTING_FACET_CACHE_TTL, counts)
+    return counts
 
 
 def listing_seller_merchant_verified(conn: sqlite3.Connection, seller_id: str | None) -> bool:
@@ -17967,6 +18333,52 @@ def refresh_hot_scores(conn: sqlite3.Connection, force_full: bool = False) -> in
     return cur.rowcount or 0
 
 
+def assign_initial_hot_score(conn: sqlite3.Connection, post_id: str) -> None:
+    """发帖即写初始 hot_score — closes the ≤60s window in which a brand-new post
+    had hot_score=0 and was invisible on every hot_score-sorted surface (冷启动
+    混排 hot side filters hot_score > 0; the 热榜 candidate scan sorts on it).
+    With real_first ON that window was even worse: the new REAL post ranked
+    below every seed post already carrying the +1e6 band.
+
+    Mirrors the refresher's formula for a zero-engagement newborn row:
+        hot_score = FRESH_PEAK × fresh_author_mult (+ real-first band)
+        hot_score_engaged = 0
+    reusing the exact same per-author freshness-decay correlated subquery
+    (fresh_newer_by_author CASE ladder in refresh_hot_scores) so an author
+    flooding posts can't stack full exposure bonuses even inside the first
+    minute. Member ×1.05 is deliberately skipped — the refresher overwrites the
+    row with the full formula within KAIX_HOT_SCORE_INTERVAL_SEC anyway, and a
+    ≤60s 5% undershoot is invisible. Best-effort: never blocks the post write."""
+    try:
+        fresh_cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=HOT_SCORE_FRESH_WINDOW_H + 1.0)
+        ).isoformat()
+        real_floor = REAL_FIRST_FLOOR if _real_first_enabled(conn) else 0.0
+        # Same shape as fresh_newer_by_author / fresh_author_mult in
+        # refresh_hot_scores (portable CASE ladder; SQLite has no POWER()).
+        fresh_newer = (
+            "(SELECT COUNT(*) FROM posts pp "
+            " WHERE pp.author_id = posts.author_id AND pp.deleted_at IS NULL "
+            "   AND pp.status IN ('published', 'active') "
+            "   AND pp.created_at > posts.created_at AND pp.created_at >= ?)"
+        )
+        fresh_mult = (
+            f"(CASE {fresh_newer} "
+            f"WHEN 0 THEN 1.0 WHEN 1 THEN 0.5 WHEN 2 THEN 0.25 "
+            f"WHEN 3 THEN 0.125 WHEN 4 THEN 0.0625 ELSE 0.03125 END)"
+        )
+        conn.execute(
+            f"UPDATE posts SET "
+            f"hot_score = ({HOT_SCORE_FRESH_PEAK} * {fresh_mult}) "
+            f"+ (CASE WHEN COALESCE(is_seed_content, 0) = 0 THEN {real_floor} ELSE 0.0 END), "
+            f"hot_score_engaged = 0 "
+            f"WHERE id = ?",
+            (fresh_cutoff, post_id),
+        )
+    except Exception:
+        ERR_LOG.warning("assign_initial_hot_score failed post=%s", post_id)
+
+
 # ---------------------------------------------------------------------------
 # 热搜/热榜 rank snapshots (topic_rank_snapshots). Written by the hot-score
 # refresher on a ~10 min cadence so rankDelta (this rank vs the previous
@@ -18938,7 +19350,14 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "explore_repost_weight": "6",
     "explore_favorite_weight": "4",
     "explore_view_weight": "0.2",
-    "explore_time_decay_weight": "8",
+    # 热榜终排的新鲜度满分从 8 提到 15:配合 explore_decay_hours(下方)构成
+    # 「时间窗 engagement 排名」口径 — 新帖侧道进候选后,终排里几个赞就压过
+    # 满额新鲜分的老问题被这两个参数共同缓解。热调可回滚。
+    "explore_time_decay_weight": "15",
+    # 热榜终排新鲜度的衰减窗口(小时)。历史行为是 hot_days*24(=168h,太平缓,
+    # 新鲜分几乎不随帖龄变化);现在默认 48h,让「最近两天」真正比一周前新鲜。
+    # 置 0/空 = 回退到 hot_days*24 的旧口径。
+    "explore_decay_hours": "48",
     "explore_report_penalty": "20",
     "explore_min_display": "5",
     "explore_fallback_enabled": "1",
@@ -18972,6 +19391,23 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "recommend_mmr_w_tag": "0.6",
     "recommend_mmr_w_author": "0.25",
     "recommend_mmr_w_type": "0.15",
+    # --- Recommend-feed 专业化(池缩小 / 新鲜注入槽 / hot_score 回灌 / 关注加成) ---
+    # 推荐页1候选池 = limit × pool_mult(旧值等效 5,缩到 3:池影子从 ~80 条缩到
+    # ~40 条,配合注入槽轮换,影子内容在后续会话可被抽中)。
+    "recommend_pool_mult": "3",
+    # 新鲜注入槽占页面的比例(epsilon-greedy 探索版位):20 条页 ≈4 槽,从
+    # 欠曝光集合按 1/(view_count+1) 加权随机抽样,每请求独立随机 → 天然轮换。
+    "recommend_fresh_slot_ratio": "0.2",
+    # 欠曝光集合的准入:发布 < N 小时、like+comment < engagement_max、
+    # view_count ≤ view_max(三条同时满足才算「欠曝光的新帖」)。
+    "recommend_fresh_max_age_hours": "24",
+    "recommend_fresh_engagement_max": "3",
+    "recommend_fresh_view_max": "50",
+    # hot_score 归一化(hs/(hs+50),先剥 real-first band)后回灌推荐分的权重:
+    # 让「发出2小时已有互动」的帖子能二次进入推荐,而不是只活在热榜。
+    "recommend_hot_weight": "0.8",
+    # 关注作者在兴趣画像里的直接加成(介于评论 2.0 与收藏 3.0 之间,走既有归一化)。
+    "recommend_follow_author_bonus": "2",
     # --- Engagement simulation (seed personas gradually like/收藏/comment/follow) ---
     "engagement_sim_enabled": "1",
     "engagement_sim_max_days": "3",        # only grow a post/user for its first N days
@@ -19192,7 +19628,9 @@ def _explore_rank_config(conn: sqlite3.Connection) -> dict[str, Any]:
         "repost_weight": _settings_float(settings, "explore_repost_weight", 6, 0, 50),
         "favorite_weight": _settings_float(settings, "explore_favorite_weight", 4, 0, 50),
         "view_weight": _settings_float(settings, "explore_view_weight", 0.2, 0, 10),
-        "time_decay_weight": _settings_float(settings, "explore_time_decay_weight", 8, 0, 50),
+        "time_decay_weight": _settings_float(settings, "explore_time_decay_weight", 15, 0, 50),
+        # 终排新鲜度衰减窗口(小时);0 = legacy hot_days*24。见 SITE_SETTING_DEFAULTS。
+        "decay_hours": _settings_float(settings, "explore_decay_hours", 48, 0, 720),
         "report_penalty": _settings_float(settings, "explore_report_penalty", 20, 0, 200),
         "min_display": _settings_int(settings, "explore_min_display", 5, 0, 30),
         "fallback_enabled": settings.get("explore_fallback_enabled", "1") != "0",
@@ -19243,6 +19681,23 @@ def _recommend_mmr_config(conn: sqlite3.Connection) -> dict[str, Any]:
         "w_tag": _settings_float(settings, "recommend_mmr_w_tag", 0.6, 0.0, 1.0),
         "w_author": _settings_float(settings, "recommend_mmr_w_author", 0.25, 0.0, 1.0),
         "w_type": _settings_float(settings, "recommend_mmr_w_type", 0.15, 0.0, 1.0),
+    }
+
+
+def _recommend_feed_config(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Admin-tunable knobs for the professionalized recommend feed: candidate
+    pool size, the fresh-injection (探索) slots, the hot_score feedback weight
+    and the follow-author profile bonus. Hot-editable via site settings, no
+    restart — mirrors _explore_rank_config / _recommend_mmr_config."""
+    settings = _site_settings(conn)
+    return {
+        "pool_mult": _settings_int(settings, "recommend_pool_mult", 3, 2, 6),
+        "fresh_slot_ratio": _settings_float(settings, "recommend_fresh_slot_ratio", 0.2, 0.0, 0.5),
+        "fresh_max_age_hours": _settings_float(settings, "recommend_fresh_max_age_hours", 24.0, 1.0, 168.0),
+        "fresh_engagement_max": _settings_int(settings, "recommend_fresh_engagement_max", 3, 0, 100),
+        "fresh_view_max": _settings_int(settings, "recommend_fresh_view_max", 50, 0, 100000),
+        "hot_weight": _settings_float(settings, "recommend_hot_weight", 0.8, 0.0, 5.0),
+        "follow_author_bonus": _settings_float(settings, "recommend_follow_author_bonus", 2.0, 0.0, 10.0),
     }
 
 
@@ -19380,6 +19835,109 @@ def _break_runs(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     return out[:limit]
 
 
+# Recommend-feed scoring constants (BE3 专业化). The freshness term now decays
+# on REAL post age (not position in the pool) over this window; the hot_score
+# feedback is normalized rationally hs/(hs+MID) so a runaway-hot post saturates
+# at 1.0 instead of drowning the interest signal.
+RECOMMEND_FRESH_DECAY_H = 24.0
+RECOMMEND_HOT_NORM_MID = 50.0
+
+
+def _post_age_hours(row: dict[str, Any]) -> float | None:
+    """Age of a post row in hours from its created_at ISO string; None when the
+    value is missing/unparsable (synthetic test rows) — callers treat that as
+    'no freshness signal' rather than guessing."""
+    raw = row.get("created_at") or ""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
+    except Exception:
+        return None
+
+
+def _inject_fresh_slots(
+    ranked: list[dict[str, Any]],
+    fresh_rows: list[dict[str, Any]],
+    limit: int,
+    slots: int,
+    rng: Any = None,
+) -> list[dict[str, Any]]:
+    """Explicit fresh-injection slots (epsilon-greedy 探索) for the recommend
+    page: reserve `slots` positions and fill them with under-exposed fresh posts
+    sampled WITHOUT replacement, weighted by 1/(view_count+1) — the least-seen
+    posts are the most likely picks, and because sampling is per-request the
+    injected set rotates naturally across refreshes. This is what dissolves the
+    deterministic pool shadow: content the interest ranking would never surface
+    still gets real exposure over repeated visits.
+
+    Picks are spliced at evenly spread positions (never slot 0 — the top
+    personalized pick stays), displacing the tail to keep exactly ≤ limit rows.
+    The caller runs this BEFORE the real-first partition, so injected rows (the
+    query feeding fresh_rows is real-only) keep the band invariant intact.
+    Deterministic when len(fresh_rows) ≤ slots (everything gets injected) —
+    which is also what the tests pin down."""
+    if limit < 2 or slots <= 0 or not fresh_rows:
+        return ranked[:limit]
+    rng = rng or random
+    page = ranked[:limit]
+    present = {r.get("id") for r in page}
+    candidates = [r for r in fresh_rows if r.get("id") and r.get("id") not in present]
+    picks: list[dict[str, Any]] = []
+    pool = list(candidates)
+    while pool and len(picks) < slots:
+        weights = [1.0 / (float(r.get("view_count") or 0) + 1.0) for r in pool]
+        total = sum(weights)
+        if total <= 0:
+            picks.append(pool.pop(0))
+            continue
+        roll = rng.random() * total
+        acc = 0.0
+        chosen = len(pool) - 1
+        for i, w in enumerate(weights):
+            acc += w
+            if roll <= acc:
+                chosen = i
+                break
+        picks.append(pool.pop(chosen))
+    if not picks:
+        return page
+    # Spread positions: (j+1)·limit/(picks+1), clamped into [1, limit-1] and
+    # de-duplicated by nudging right — e.g. limit=20, 4 picks → slots 4/8/12/16.
+    used: set[int] = set()
+    positions: list[int] = []
+    for j in range(len(picks)):
+        pos = max(1, min(limit - 1, (j + 1) * limit // (len(picks) + 1)))
+        while pos in used and pos < limit - 1:
+            pos += 1
+        while pos in used and pos > 1:
+            pos -= 1
+        if pos in used:
+            break  # page saturated with picks; drop the surplus
+        used.add(pos)
+        positions.append(pos)
+    positions.sort()
+    keep = page[: max(1, limit - len(positions))]
+    out: list[dict[str, Any]] = []
+    ki = pi = 0
+    for pos in range(limit):
+        if pi < len(positions) and pos == positions[pi]:
+            out.append(picks[pi])
+            pi += 1
+        elif ki < len(keep):
+            out.append(keep[ki])
+            ki += 1
+        elif pi < len(picks[: len(positions)]):
+            out.append(picks[pi])
+            pi += 1
+        else:
+            break
+    return out[:limit]
+
+
 def _diversity_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
     """Aggregate-only diversity metrics for eval logging (BE2): content-type
     entropy, tag entropy, author Gini, and mean intra-list dissimilarity (ILD).
@@ -19449,7 +20007,14 @@ def _explore_heat_score_sql(alias: str, config: dict[str, Any]) -> str:
     else:
         hours_since = f"(julianday('now') - julianday({alias}.created_at)) * 24.0"
         max2 = "MAX"
-    decay_hours = max(24.0, float(config.get("hot_days") or 10) * 24.0)
+    # Freshness-bonus fade window: admin-tunable (explore_decay_hours, default
+    # 48h) so the time_decay_weight actually differentiates "the last two days"
+    # from "a week ago". 0/unset falls back to the legacy hot_days*24 (≈168h,
+    # under which the bonus barely moved across the whole window).
+    decay_hours = float(config.get("decay_hours") or 0.0)
+    if decay_hours <= 0:
+        decay_hours = max(24.0, float(config.get("hot_days") or 10) * 24.0)
+    decay_hours = max(6.0, decay_hours)
     # Same denormalized-counter rewrite as _heat_score_sql: no correlated COUNT
     # subqueries, so the explore/热榜 ranking scans are cheap arithmetic per row.
     return f"""
@@ -34944,6 +35509,19 @@ class Handler(BaseHTTPRequestHandler):
             clauses.append("status IN (%s)" % ",".join("?" * len(PUBLIC_LISTING_STATUSES)))
             params.extend(PUBLIC_LISTING_STATUSES)
 
+        # ── 条件槽位登记(0 结果渐进放宽 + facet 计数共用)──────────────────
+        # 每个「用户主动加的」筛选 clause 在追加前登记 (kind, key, label,
+        # clause 下标, 参数区间):第一页查空时逐个「去掉该条件重 COUNT」,
+        # facet 计数用它做 disjunctive(摘掉目标 attr 自己的 clause)。
+        # 只登记、不追加 —— clause/params 的既有顺序零变化。
+        relax_slots: list[dict[str, Any]] = []
+
+        def _relax_slot(kind: str, key: str, label: str, param_n: int, attr_key: str = "") -> None:
+            relax_slots.append({
+                "kind": kind, "key": key, "label": label, "attr_key": attr_key,
+                "clause_at": len(clauses), "param_at": len(params), "param_n": param_n,
+            })
+
         city_slug = (query.get("city_slug") or query.get("city") or "").strip().lower()
         city_slugs = [
             item.strip().lower()
@@ -34980,24 +35558,31 @@ class Handler(BaseHTTPRequestHandler):
         # 空结果回退用:记录地域条件在 clauses/params 里的位置(下标, 参数起点, 参数个数),
         # 第一页查空时可原位替换成都市圈/全国条件重查一次(见主查询后的 fallback 块)。
         fallback_geo_slot: tuple[int, int, int] | None = None
+        # scope 槽位:country_code 是「全国」基线、不算可放宽条件,其余地域
+        # 条件都登记为 kind=scope(label 直接回显值,客户端有自己的地名文案)。
         if province_codes:
             prefix_country = country_code or "jp"
             like_clauses = " OR ".join(["region_code LIKE ?"] * len(province_codes))
             fallback_geo_slot = (len(clauses), len(params), len(province_codes))
+            _relax_slot("scope", "province_codes", ",".join(province_codes), len(province_codes))
             clauses.append("(%s)" % like_clauses)
             params.extend(f"{prefix_country}.{prov}.%" for prov in province_codes)
         elif city_slugs:
+            _relax_slot("scope", "city_slugs", ",".join(city_slugs), len(city_slugs))
             clauses.append("city_slug IN (%s)" % ",".join("?" * len(city_slugs)))
             params.extend(city_slugs)
         elif city_slug:
             fallback_geo_slot = (len(clauses), len(params), 1)
+            _relax_slot("scope", "city_slug", city_slug, 1)
             clauses.append("city_slug = ?")
             params.append(city_slug)
         elif region_codes:
+            _relax_slot("scope", "region_codes", ",".join(region_codes), len(region_codes))
             clauses.append("region_code IN (%s)" % ",".join("?" * len(region_codes)))
             params.extend(region_codes)
         elif region_code:
             fallback_geo_slot = (len(clauses), len(params), 1)
+            _relax_slot("scope", "region_code", region_code, 1)
             clauses.append("region_code = ?")
             params.append(region_code)
         elif country_code:
@@ -35011,14 +35596,17 @@ class Handler(BaseHTTPRequestHandler):
             if item.strip() and item.strip() not in {"全部", "all"}
         ][:24]
         if categories:
+            _relax_slot("category", "category", ", ".join(categories), len(categories))
             clauses.append("category IN (%s)" % ",".join("?" * len(categories)))
             params.extend(categories)
         elif category and category not in {"全部", "all"}:
+            _relax_slot("category", "category", category, 1)
             clauses.append("category = ?")
             params.append(category)
         q = (query.get("q") or query.get("keyword") or "").strip()
         if q:
             like = f"%{q}%"
+            _relax_slot("query", "q", q, 4)
             clauses.append("(title LIKE ? OR description LIKE ? OR location_text LIKE ? OR category LIKE ?)")
             params.extend([like, like, like, like])
 
@@ -35039,6 +35627,9 @@ class Handler(BaseHTTPRequestHandler):
                     threshold = float(str(raw_value).strip())
                 except (TypeError, ValueError):
                     continue
+                _relax_slot("attr", raw_key,
+                            LISTING_RELAXATION_ATTR_LABELS.get(attr_key, attr_key), 2,
+                            attr_key=attr_key)
                 clauses.append(
                     "EXISTS (SELECT 1 FROM listing_attributes la WHERE la.listing_id = city_listings.id"
                     " AND la.key = ? AND CAST(la.value AS REAL) >= ?)"
@@ -35065,6 +35656,9 @@ class Handler(BaseHTTPRequestHandler):
             truthy_requested = bool(normalized_values.intersection(truthy_texts))
             if attr_key in {"pickup_available", "shipping_available"} and truthy_requested:
                 delivery_values = ("pickup", "pickup_or_shipping") if attr_key == "pickup_available" else ("shipping", "pickup_or_shipping")
+                _relax_slot("attr", raw_key,
+                            LISTING_RELAXATION_ATTR_LABELS.get(attr_key, attr_key),
+                            len(expanded) + 4, attr_key=attr_key)
                 clauses.append(
                     "EXISTS (SELECT 1 FROM listing_attributes la WHERE la.listing_id = city_listings.id"
                     " AND ((la.key = ? AND la.value IN (%s)) OR (la.key = ? AND la.value IN (?, ?))))"
@@ -35072,6 +35666,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 params.extend([attr_key, *expanded, "delivery_method", *delivery_values])
                 continue
+            _relax_slot("attr", raw_key,
+                        LISTING_RELAXATION_ATTR_LABELS.get(attr_key, attr_key),
+                        len(expanded) + 1, attr_key=attr_key)
             clauses.append(
                 "EXISTS (SELECT 1 FROM listing_attributes la WHERE la.listing_id = city_listings.id AND la.key = ? AND la.value IN (%s))"
                 % ",".join("?" * len(expanded))
@@ -35088,20 +35685,37 @@ class Handler(BaseHTTPRequestHandler):
             clauses.append("id != ?")
             params.append(exclude_id)
 
+        # 价格:先解析再追加 —— 旧写法 clauses.append 在 float() 之前,畸形
+        # min_price(?min_price=abc)会留下一个没有参数的 ? 占位符,执行时
+        # 绑定数不匹配直接 500;现在解析失败与既有注释宣称的一致:静默忽略。
+        def _price_label(prefix: str, value: float) -> str:
+            text = str(int(value)) if float(value).is_integer() else str(value)
+            return f"{prefix} ¥{text}"
+
         min_price = query.get("min_price")
         max_price = query.get("max_price")
         if min_price:
             try:
+                min_price_val: float | None = float(min_price)
+            except (TypeError, ValueError):
+                min_price_val = None
+            if min_price_val is not None:
+                _relax_slot("price", "min_price", _price_label("最低价", min_price_val), 1)
                 clauses.append("(price IS NULL OR price >= ?)")
-                params.append(float(min_price))
-            except ValueError:
-                pass
+                params.append(min_price_val)
         if max_price:
             try:
+                max_price_val: float | None = float(max_price)
+            except (TypeError, ValueError):
+                max_price_val = None
+            if max_price_val is not None:
+                _relax_slot("price", "max_price", _price_label("最高价", max_price_val), 1)
                 clauses.append("(price IS NULL OR price <= ?)")
-                params.append(float(max_price))
-            except ValueError:
-                pass
+                params.append(max_price_val)
+
+        # facet 计数与放宽 COUNT 都基于「不含游标 clause」的基础条件快照。
+        base_clauses = list(clauses)
+        base_params = list(params)
 
         if cursor:
             clauses.append("(updated_at, id) < (?, ?)")
@@ -35143,6 +35757,31 @@ class Handler(BaseHTTPRequestHandler):
             sql += " OFFSET ?"
             sql_params.append(page_offset)
         rows = list(conn.execute(sql, sql_params))
+        # ── 0 结果渐进放宽提示 ────────────────────────────────────────────────
+        # 第一页查空、且空是「用户主动条件」(attr/价格/类目/关键词)造成的,就对
+        # 每个已登记条件做一次「去掉该 clause 的 COUNT」,让客户端能提示
+        # 「移除〈家具家电〉→ 37 条」并支持单条移除。scope 条件也一并给出计数
+        # (但单独 scope 造成的空仍走下面既有的地域回退,不触发本块)。条件数
+        # 受 attr 白名单与参数上限约束,再加 12 的硬顶 —— 最多 12 个走既有索引
+        # 的 COUNT,只在空结果第一页发生,开销可忽略。
+        relaxation: list[dict[str, Any]] | None = None
+        if (not rows and not cursor and not sort_cursor
+                and any(s["kind"] in ("attr", "price", "category", "query") for s in relax_slots)):
+            relaxation = []
+            for slot in relax_slots[:12]:
+                rc = [c for i, c in enumerate(base_clauses) if i != slot["clause_at"]]
+                rp = [*base_params[:slot["param_at"]],
+                      *base_params[slot["param_at"] + slot["param_n"]:]]
+                n_row = conn.execute(
+                    f"SELECT COUNT(*) AS n FROM city_listings WHERE {' AND '.join(rc)}",
+                    rp,
+                ).fetchone()
+                relaxation.append({
+                    "kind": slot["kind"],
+                    "key": slot["key"],
+                    "label": slot["label"],
+                    "count_if_removed": int(n_row["n"] if n_row else 0),
+                })
         # 空结果回退:第一页在都道府县(province_codes)或精确城市筛选下一条都查不到时,
         # 放宽到该地区所属都市圈(生活圈)重查一次;不属任何都市圈则放宽到全国。命中时
         # 通过 data.filters.fallback / fallback_label 告知客户端「该地区暂无,已为你展示
@@ -35247,6 +35886,16 @@ class Handler(BaseHTTPRequestHandler):
                     params,
                 ).fetchone()
             total_count = int(count_row["n"] if count_row else 0)
+        # ── facet 计数(facets=1)────────────────────────────────────────────
+        # 筛选面板选项旁的计数徽标。disjunctive 语义 + 60s 进程内缓存见
+        # compute_listing_facet_counts;基于不含游标 clause 的基础条件快照,
+        # 任意页请求都返回同一份口径。
+        facet_counts: dict[str, dict[str, int]] | None = None
+        if (query.get("facets") or "").strip().lower() in {"1", "true", "yes"}:
+            facet_counts = compute_listing_facet_counts(
+                conn, listing_type, base_clauses, base_params,
+                [s for s in relax_slots if s["kind"] == "attr"],
+            )
         items = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
         viewer_payload = {"id": viewer_id} if viewer_id else None
         filters_payload: dict[str, Any] = {
@@ -35264,7 +35913,7 @@ class Handler(BaseHTTPRequestHandler):
             # 命中空结果回退才带,客户端据此提示「该地区暂无,已为你展示{fallback_label}的内容」。
             filters_payload["fallback"] = fallback_kind
             filters_payload["fallback_label"] = fallback_label
-        self.send_json({
+        response: dict[str, Any] = {
             "ok": True,
             "items": items,
             "next_cursor": next_cursor,
@@ -35276,7 +35925,15 @@ class Handler(BaseHTTPRequestHandler):
                 "pagination": {"next_cursor": next_cursor, "total": total_count},
                 "filters": filters_payload,
             },
-        })
+        }
+        # 契约:只增字段。relaxation 仅在「第一页空结果 + 主动条件」时出现;
+        # facet_counts 仅在请求带 facets=1 时出现。既有字段(含 next_cursor
+        # 编码与游标语义)零变化。
+        if relaxation is not None:
+            response["relaxation"] = relaxation
+        if facet_counts is not None:
+            response["facet_counts"] = facet_counts
+        self.send_json(response)
 
     # ── 社交房间(交友 · 约局 · 约饭)— thin handlers over server_rooms ──────
 
@@ -38905,52 +39562,73 @@ class Handler(BaseHTTPRequestHandler):
                 "region": region_scope,
                 "config": score_config,
                 "quality": quality_clause,
+                # Candidate-structure version marker: the hot board moved to the
+                # two-lane (engaged + recency) selection below. Guarantees a
+                # config-identical cached page from the old single-lane shape can
+                # never be served across a deploy boundary.
+                "cand": "engaged_v2",
             }
             cache_key = "explore:posts:" + hashlib.sha1(json.dumps(cache_input, sort_keys=True).encode("utf-8")).hexdigest()
             cached_rank = _cache_get(cache_key)
             if cached_rank is None:
                 cutoff_clause = f" AND {cutoff_expr} >= ?" if cutoff else ""
-                params: list[Any] = []
+                base_params: list[Any] = []
                 if cutoff:
-                    params.append(cutoff)
-                params.extend(region_params)
-                params.extend(type_params)
-                # Over-fetch candidates so the per-author cap (applied below) can
-                # drop a prolific author's surplus posts and still return a full
-                # page. 4× limit is plenty of headroom for a 2-per-author cap.
-                params.append(limit * 4)
+                    base_params.append(cutoff)
+                base_params.extend(region_params)
+                base_params.extend(type_params)
                 user_join = "JOIN users u ON u.id = p.author_id AND u.deleted_at IS NULL" if config.get("exclude_banned_users") else "JOIN users u ON u.id = p.author_id"
-                # Candidate SELECTION order:
-                #  - hot board: order by the precomputed, indexed hot_score
-                #    (idx_posts_hot) so the DB does an index scan instead of
-                #    sorting a live weighted expression over the whole window;
-                #    then re-rank the bounded candidate set in Python by the
-                #    admin-tuned config weights (explore_score).
+
+                def _candidates(order_by: str, cap: int) -> list[Any]:
+                    return list(conn.execute(
+                        f"""
+                        SELECT p.id, p.is_seed_content AS is_seed, {score_sql} AS explore_score
+                          FROM posts p
+                          {user_join}
+                         WHERE p.deleted_at IS NULL
+                           AND p.status IN ('published', 'active')
+                           {cutoff_clause}
+                           {region_clause}
+                           {type_clause}
+                           {quality_clause}
+                         ORDER BY {order_by}
+                         LIMIT ?
+                        """,
+                        [*base_params, cap],
+                    ))
+
+                # Candidate SELECTION:
+                #  - hot board (BE3.5 two-lane): the MAIN lane orders by
+                #    hot_score_engaged — the pure-engagement heat WITHOUT the
+                #    30-point freshness 曝光分 — so a wave of zero-engagement new
+                #    posts can no longer crowd genuinely hot posts out of the
+                #    candidate pool (the old hot_score order mixed both). The
+                #    SIDE lane is a small recency slice: the explicit new-post
+                #    channel into the final re-rank, where the (48h-decay)
+                #    time_decay_weight decides how far freshness carries them.
+                #    Lanes are two bounded ORDER BY..LIMIT queries merged with
+                #    id-dedup in Python — equivalent to a UNION but portable
+                #    across the SQLite/PG compound-select ORDER BY differences.
+                #    (hot_score_engaged has no dedicated index yet; the sort is
+                #    bounded by the days-window + region filters, same cost class
+                #    as the happening board's expression sort.)
                 #  - happening board: no precomputed column captures its
                 #    recency-of-activity semantics, so keep the in-SQL sort by
                 #    the (subquery-free) score expression.
                 if kind == "happening":
-                    order_by = "explore_score DESC, p.created_at DESC"
+                    ranked_rows = _candidates("explore_score DESC, p.created_at DESC", limit * 4)
                     reorder_in_python = False
                 else:
-                    order_by = "p.hot_score DESC, p.created_at DESC"
+                    main_rows = _candidates("p.hot_score_engaged DESC, p.created_at DESC", limit * 3)
+                    side_rows = _candidates("p.created_at DESC, p.id DESC", limit)
+                    seen_cand: set[str] = set()
+                    ranked_rows = []
+                    for r in list(main_rows) + list(side_rows):
+                        if r["id"] in seen_cand:
+                            continue
+                        seen_cand.add(r["id"])
+                        ranked_rows.append(r)
                     reorder_in_python = True
-                ranked_rows = list(conn.execute(
-                    f"""
-                    SELECT p.id, p.is_seed_content AS is_seed, {score_sql} AS explore_score
-                      FROM posts p
-                      {user_join}
-                     WHERE p.deleted_at IS NULL
-                       AND p.status IN ('published', 'active')
-                       {cutoff_clause}
-                       {region_clause}
-                       {type_clause}
-                       {quality_clause}
-                     ORDER BY {order_by}
-                     LIMIT ?
-                    """,
-                    params,
-                ))
                 cached_rank = [{"id": r["id"], "seed": int(r["is_seed"] or 0), "score": float(r["explore_score"] or 0)} for r in ranked_rows]
                 # Re-rank the hot candidates by the config-weighted score so the
                 # admin weights still decide final order within the index-selected
@@ -38960,7 +39638,8 @@ class Handler(BaseHTTPRequestHandler):
                         # Real-first OUTER key: real (seed=0) before seed (1);
                         # stable within each tier by score. This is what guarantees
                         # a simulated-like seed post can't out-rank real UGC even
-                        # though the candidate pool was selected by hot_score.
+                        # though the candidate lanes were selected by
+                        # hot_score_engaged / recency.
                         cached_rank.sort(key=lambda it: (it["seed"], -it["score"]))
                     else:
                         cached_rank.sort(key=lambda item: item["score"], reverse=True)
@@ -39439,6 +40118,27 @@ class Handler(BaseHTTPRequestHandler):
                 d = dict(r)
                 seen.add(d["pid"])
                 _absorb(d.get("ct") or "", d.get("tags") or "", d.get("aid") or "", 2.0)
+            # 关注关系直接进画像 (BE3.6): a followed author gets a flat bonus
+            # (default 2.0 — between a comment's 2.0 and a bookmark's 3.0) so an
+            # author the viewer EXPLICITLY follows carries author affinity even
+            # with zero interaction history, and their new posts pick up the
+            # 1.2×author term in _recommend_rank. Deliberate side effect: follows
+            # alone make the profile 'active', so a follower with no interactions
+            # gets the personalized page anchored on who they follow instead of
+            # the cold-start mix. Index note: the follower_id probe rides
+            # idx_follows_follower / idx_follows_unique_pair(follower_id, …);
+            # the ORDER BY only sorts that one user's follow rows and LIMIT 500
+            # bounds the absorb, so a mega-follower can't bloat the profile scan.
+            follow_bonus = _recommend_feed_config(conn).get("follow_author_bonus", 2.0)
+            if follow_bonus > 0:
+                for r in conn.execute(
+                    "SELECT following_id FROM follows WHERE follower_id = ? "
+                    "ORDER BY created_at DESC LIMIT 500",
+                    (viewer_id,),
+                ):
+                    aid = r["following_id"]
+                    if aid:
+                        authors[aid] = authors.get(aid, 0.0) + follow_bonus
         except Exception:
             return {
                 "types": {}, "topics": {}, "authors": {},
@@ -39471,6 +40171,8 @@ class Handler(BaseHTTPRequestHandler):
         profile: dict[str, Any],
         limit: int,
         mmr_config: dict[str, Any] | None = None,
+        fresh_rows: list[dict[str, Any]] | None = None,
+        feed_config: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Re-rank a recency-ordered candidate pool by interest match while
         keeping freshness and diversity. Pure function over the pool — does not
@@ -39498,11 +40200,18 @@ class Handler(BaseHTTPRequestHandler):
         # freshness index (below) aligned with what actually gets ranked.
         if dismissed:
             rows = [r for r in rows if r.get("id") not in dismissed]
-        n = len(rows)
+        hot_weight = float((feed_config or {}).get("hot_weight", 0.8))
         scored: list[tuple[float, int, dict[str, Any]]] = []
         for idx, row in enumerate(rows):
-            # Freshness: linear by position in the recency-sorted pool (1.0 newest).
-            freshness = 1.0 - (idx / n) if n > 1 else 1.0
+            # Freshness: REAL age decay (2.0 × max(0, 24h − age)/24h) instead of
+            # the old position-in-pool proxy — with a shrinking/injected pool the
+            # position no longer tracks actual recency, and age is what the
+            # product statement ("新帖的头 24h 有加成") actually means.
+            age_h = _post_age_hours(row)
+            freshness = (
+                max(0.0, RECOMMEND_FRESH_DECAY_H - age_h) / RECOMMEND_FRESH_DECAY_H
+                if age_h is not None else 0.0
+            )
             interest = 0.0
             ct = row.get("content_type") or ""
             if ct and ct in types:
@@ -39521,6 +40230,18 @@ class Handler(BaseHTTPRequestHandler):
             if aid and aid in neg_authors:
                 interest -= 1.2 * neg_authors[aid]
             score = 2.0 * freshness + interest
+            # hot_score 回灌 (BE3.1): normalized engagement heat, ~0.8 weight, so
+            # a post that picked up real interactions after posting can re-enter
+            # the recommend page instead of living only on the 热榜. Strip the
+            # real-first band first (it's a display-order device, not heat), then
+            # squash rationally hs/(hs+50) → [0,1) so no post can drown the
+            # interest signal.
+            if hot_weight > 0:
+                hs = float(row.get("hot_score") or 0.0)
+                if hs >= REAL_FIRST_FLOOR / 2.0:
+                    hs -= REAL_FIRST_FLOOR
+                if hs > 0:
+                    score += hot_weight * (hs / (hs + RECOMMEND_HOT_NORM_MID))
             if row.get("id") in seen:
                 score -= 2.5  # already engaged: down-weight hard, don't exclude
             scored.append((score, idx, row))
@@ -39600,18 +40321,28 @@ class Handler(BaseHTTPRequestHandler):
                     out.extend(r for r in deferred if id(r) not in already)
             ranked = out[:limit]
 
-        # Freshness floor — guarantees newly-posted content is actually seen.
-        # The interest score can let a strongly-matched older post outrank a
-        # brand-new, zero-engagement one, so a fresh post could miss page 1
-        # entirely. Reserve a small quota for the very newest pool rows (the pool
-        # is recency-ordered, idx 0 = newest) and splice any that the ranking
-        # dropped in right after the top personalized pick, where they're seen.
-        fresh_quota = min(limit, max(2, limit // 6))
-        ranked_ids = {r.get("id") for r in ranked}
-        missing_fresh = [r for r in rows[:fresh_quota] if r.get("id") not in ranked_ids]
-        if missing_fresh:
-            keep = ranked[: max(1, limit - len(missing_fresh))]
-            ranked = (keep[:1] + missing_fresh + keep[1:])[:limit]
+        # Fresh exposure — guarantees newly-posted content is actually seen.
+        # Preferred path (fresh_rows supplied by api_feed): explicit injection
+        # slots — ~20% of the page reserved for under-exposed fresh posts,
+        # sampled per-request with 1/(view_count+1) weighting (epsilon-greedy
+        # exploration; see _inject_fresh_slots). This replaces the old fixed
+        # "newest 3 of the pool" floor, which was deterministic and left the
+        # rest of the pool in a permanent shadow.
+        if fresh_rows is not None:
+            ratio = float((feed_config or {}).get("fresh_slot_ratio", 0.2))
+            slots = max(1, int(round(limit * ratio))) if ratio > 0 else 0
+            ranked = _inject_fresh_slots(ranked, fresh_rows, limit, slots)
+        else:
+            # Legacy freshness floor for callers without an explored fresh set
+            # (direct helper calls / tests): reserve a small quota for the very
+            # newest pool rows and splice any the ranking dropped back in right
+            # after the top personalized pick.
+            fresh_quota = min(limit, max(2, limit // 6))
+            ranked_ids = {r.get("id") for r in ranked}
+            missing_fresh = [r for r in rows[:fresh_quota] if r.get("id") not in ranked_ids]
+            if missing_fresh:
+                keep = ranked[: max(1, limit - len(missing_fresh))]
+                ranked = (keep[:1] + missing_fresh + keep[1:])[:limit]
         ranked = ranked[:limit]
 
         # Real-first OUTER partition — applied AFTER MMR/freshness so MMR only
@@ -39754,6 +40485,59 @@ class Handler(BaseHTTPRequestHandler):
             out = ([r for r in out if not r.get("is_seed_content")]
                    + [r for r in out if r.get("is_seed_content")])
         return out[:limit]
+
+    def _recommend_fresh_pool(
+        self,
+        conn: sqlite3.Connection,
+        region_clause: str,
+        region_params: list[Any],
+        type_clause: str,
+        type_params: list[Any],
+        blocked_clause: str,
+        blocked_params: list[Any],
+        feed_cfg: dict[str, Any],
+        dismissed: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Under-exposed fresh REAL posts for the recommend injection slots
+        (BE3.1): created < fresh_max_age_hours ago, with under
+        fresh_engagement_max likes+comments and ≤ fresh_view_max views —
+        i.e. new content the engagement machinery hasn't validated yet, which
+        is exactly what the epsilon-greedy slots exist to explore. Seed content
+        is excluded (its exposure is manufactured; exploring it wastes the
+        slots and would fight the real-first partition). Same region/type/block
+        filters as the pool so an injected row is always feed-eligible. The
+        created_at keyset rides idx_posts_created (or the region/type composite
+        indexes when those clauses bind); LIMIT 200 caps the sampling set.
+        Best-effort: any failure returns [] and the ranker falls back to its
+        legacy freshness floor semantics (fresh_rows=[] simply injects none)."""
+        since = (
+            datetime.now(timezone.utc)
+            - timedelta(hours=float(feed_cfg.get("fresh_max_age_hours") or 24.0))
+        ).isoformat()
+        sql = (
+            "SELECT p.* FROM posts p"
+            " WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')"
+            " AND p.created_at >= ?"
+            " AND COALESCE(p.is_seed_content, 0) = 0"
+            " AND COALESCE(p.like_count, 0) + COALESCE(p.comment_count, 0) < ?"
+            " AND COALESCE(p.view_count, 0) <= ?"
+            + region_clause + type_clause + blocked_clause
+            + " ORDER BY p.created_at DESC, p.id DESC LIMIT 200"
+        )
+        params = [
+            since,
+            int(feed_cfg.get("fresh_engagement_max") or 3),
+            int(feed_cfg.get("fresh_view_max") or 50),
+            *region_params, *type_params, *blocked_params,
+        ]
+        try:
+            rows = [dict(r) for r in conn.execute(sql, params)]
+        except Exception:
+            ERR_LOG.warning("recommend fresh pool query degraded")
+            return []
+        if dismissed:
+            rows = [r for r in rows if r.get("id") not in dismissed]
+        return rows
 
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
@@ -39967,7 +40751,12 @@ class Handler(BaseHTTPRequestHandler):
             and cursor is None
         )
         if personalize:
-            pool_size = min(max(limit * 5, 60), 200)
+            feed_cfg = _recommend_feed_config(conn)
+            # BE3.1 pool shrink: limit×3 (was ×5). The un-shown remainder of the
+            # pool is a deterministic shadow until page 2's cursor skips past it;
+            # a smaller pool + the fresh-injection rotation (below) bounds that
+            # shadow to ~2× the page instead of 4×.
+            pool_size = min(max(limit * int(feed_cfg["pool_mult"]), 40), 200)
             # Join each pool post's tags (comma-joined) as topic_slugs so the
             # interest ranker's 1.4 topic weight actually has data to score
             # against — without this the pool carried no tags and that branch was
@@ -40002,7 +40791,20 @@ class Handler(BaseHTTPRequestHandler):
             if profile.get("active") and len(pool_rows) > limit:
                 has_more = len(pool_rows) > pool_size
                 pool = pool_rows[:pool_size]
-                ranked = self._recommend_rank(pool, profile, limit, mmr_config=mmr_config)
+                # Under-exposed fresh candidates for the injection slots (BE3.1):
+                # real posts < fresh_max_age_hours old with almost no engagement
+                # and low views, same region/type/block filters as the pool.
+                # One small indexed query (idx_posts_created / idx_posts_country
+                # prefix), hard-capped at 200 rows.
+                fresh_rows = self._recommend_fresh_pool(
+                    conn, region_clause, region_params, type_clause, type_params,
+                    blocked_clause, blocked_params, feed_cfg,
+                    dismissed=profile.get("dismissed") or set(),
+                )
+                ranked = self._recommend_rank(
+                    pool, profile, limit, mmr_config=mmr_config,
+                    fresh_rows=fresh_rows, feed_config=feed_cfg,
+                )
                 next_cursor = None
                 if has_more or len(pool) > limit:
                     # Resume below the recency pool to avoid re-showing pool posts.
@@ -40033,12 +40835,18 @@ class Handler(BaseHTTPRequestHandler):
                     mmr_config=mmr_config,
                 )
                 if mixed:
-                    # 冷启动 mixed 里可能含数天前的热门帖/被前置的旧真实帖,其
-                    # created_at 早于 recency 池最旧行。续页游标必须覆盖【真正展示
-                    # 出去的 mixed 集合】的最旧 (created_at,id),否则第2页 `< cursor`
-                    # 会把这些更旧的已展示帖再取回,与第1页重复(命中新注册用户)。
+                    # 续页锚点 (BE3.2) = 【recency 侧展示行】里最旧的 (created_at,id),
+                    # 不再取整个 mixed 的最旧行:混排含最长 hot_days(默认7天)前的
+                    # 热帖,旧锚点会让第2页直接从7天前继续,锚点与现在之间所有未
+                    # 展示的新帖被整段跳过。以 recency 侧展示行为锚,第2页从真实
+                    # 时间线断点继续;代价是老热帖可能在后续 recency 页再次下发,
+                    # 由 iOS loadedIds / Web 列表按 id 去重吸收(纯字节浪费,无重
+                    # 复渲染)。游标仍严格递减(锚点是第1页展示过的行)。
                     displayed = [r for r in mixed if r.get("created_at") and r.get("id")]
-                    anchor = min(displayed, key=lambda r: (r["created_at"], r["id"])) if displayed else pool_rows[:pool_size][-1]
+                    recency_ids = {r.get("id") for r in pool_rows[:pool_size] if r.get("id")}
+                    recency_displayed = [r for r in displayed if r["id"] in recency_ids]
+                    anchor_rows = recency_displayed or displayed
+                    anchor = min(anchor_rows, key=lambda r: (r["created_at"], r["id"])) if anchor_rows else pool_rows[:pool_size][-1]
                     next_cursor = cursor_encode(anchor["created_at"], anchor["id"])
                     posts = fetch_posts_with_extras(conn, mixed, viewer_id)
                     self.send_json({
@@ -40159,6 +40967,19 @@ class Handler(BaseHTTPRequestHandler):
             region_code = _resolve_region_code(country, province, city)
         elif not country:
             country, province, city = _parse_region_code(region_code)
+        # Region 兜底 (BE3.7): client 与用户资料都没给 region 时,先回退到用户的
+        # current_region_code(同城 tab 已在用的字段),再兜底 country='jp'
+        # (产品当前只做日本)。否则 country='' 的帖子永久进不了任何带国家过滤的
+        # 推荐/同城流 —「我的新帖不见了」的一个真实来源。
+        if not (country or region_code):
+            fallback_code = (user.get("current_region_code") or "").strip().lower()
+            if fallback_code:
+                region_code = fallback_code
+                country, province, city = _parse_region_code(fallback_code)
+        if not country:
+            country = "jp"
+            if not region_code:
+                region_code = _resolve_region_code(country, province, city)
         language = _normalize_language_tag(data.get("language") or user.get("app_language") or "")
         post_id = str(uuid.uuid4())
         created_ts = now_iso()
@@ -40169,6 +40990,12 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status, country, province, city, region_code, content_type, attributes, language, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (post_id, user["id"], content, repost_of_id, country, province, city, region_code, content_type, attributes, language, created_ts, created_ts, created_ts),
         )
+        # 发帖即写初始 hot_score (BE3.3): the refresher only lands within ≤60s, and
+        # until then a hot_score=0 post is invisible to the cold-start hot side
+        # and the 热榜 candidate scan (worse under real_first: below every banded
+        # seed post). Same freshness formula as the refresher; it overwrites on
+        # its next pass.
+        assign_initial_hot_score(conn, post_id)
         for tag in extract_tags(content):
             conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, tag))
         # 显式 tags 与正文 #hashtag 一致处理:前 10 条、单条 ≤80 字符、经与
@@ -40349,6 +41176,11 @@ class Handler(BaseHTTPRequestHandler):
             )
             if not is_self and (cur.rowcount or 0) > 0:
                 bump_post_counter_for_kind(conn, post_id, kind, +1)
+                # BE3.4: mirror the like/repost/bookmark into the weighted heat
+                # column immediately (kind weight × new-account factor) so the
+                # next hot_score refresh (~60s) sees it — the 6h reconcile keeps
+                # truing it up with the full 互刷 marginal-decay formula.
+                bump_weighted_interaction_score(conn, post_id, kind, +1, user.get("created_at") or "")
             if kind == "bookmark":
                 reputation_apply_event(
                     conn,
@@ -40388,6 +41220,10 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute("DELETE FROM interactions WHERE id = ?", (existing["id"],))
             if not is_self:
                 bump_post_counter_for_kind(conn, post_id, kind, -1)
+                # Symmetric decrement (clamped at 0 in SQL). The account factor
+                # can drift across the 48h boundary between like and unlike —
+                # bounded error, healed by the 6h reconcile.
+                bump_weighted_interaction_score(conn, post_id, kind, -1, user.get("created_at") or "")
         # 不感兴趣 (dismiss) is a personal recommender signal, not heat: it maps to
         # no counter column (bump_post_counter_for_kind ignores it), doesn't
         # notify the author, and doesn't feed 热榜/正在发生. Its ONE side effect is

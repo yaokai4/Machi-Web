@@ -227,7 +227,7 @@ export function ListingBookingSection({ listingId, listingType }: { listingId: s
                       type="button"
                       onClick={() => removeSlot(slot)}
                       aria-label={t("aria_delete_slot")}
-                      className="-ml-1 rounded-full p-1 text-slate-400 transition hover:text-rose-500"
+                      className="-ml-1 rounded-full p-1 text-kx-subtle transition hover:text-kx-danger"
                     >
                       <X className="h-4 w-4" />
                     </button>

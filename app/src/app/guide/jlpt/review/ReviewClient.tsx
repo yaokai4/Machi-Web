@@ -8,7 +8,6 @@ import { guide } from "@/lib/guide";
 import { isAuthRequiredError } from "@/lib/api";
 import { useAuthPrompt } from "@/lib/store";
 import { GuideShell } from "@/components/guide/GuideKit";
-import { InlineLoading, ErrorState } from "@/components/design/States";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 import {
   QuestionCard,
@@ -18,6 +17,9 @@ import {
   JlptNarrow,
   JlptPageHeader,
   JlptStateCard,
+  JlptPageSkeleton,
+  JlptErrorCard,
+  JLPT_BTN_PRIMARY,
   JLPT_LEVELS,
   type Tri,
 } from "../JlptKit";
@@ -54,7 +56,7 @@ export function ReviewClient() {
                 <button
                   type="button"
                   onClick={() => openAuthPrompt("generic")}
-                  className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90"
+                  className={JLPT_BTN_PRIMARY}
                 >
                   {t("登录", "ログイン", "Log in")}
                 </button>
@@ -67,9 +69,12 @@ export function ReviewClient() {
     return (
       <GuideShell back={back}>
         <JlptNarrow>
-          <div className="mt-6">
-            <ErrorState />
-          </div>
+          <JlptErrorCard
+            t={t}
+            onRetry={() => q.refetch()}
+            retrying={q.isFetching}
+            title={t("错题本加载失败", "間違いノートを読み込めませんでした", "Couldn't load your review book")}
+          />
         </JlptNarrow>
       </GuideShell>
     );
@@ -94,9 +99,7 @@ export function ReviewClient() {
         </div>
 
         {q.isLoading ? (
-          <div className="mt-6">
-            <InlineLoading />
-          </div>
+          <JlptPageSkeleton t={t} variant="rows" />
         ) : !q.data?.questions?.length ? (
           <JlptStateCard
             icon={BookMarked}
@@ -104,10 +107,7 @@ export function ReviewClient() {
             title={t("暂时没有错题", "間違いはありません", "No wrong answers yet")}
             body={t("继续刷题保持手感!", "演習を続けて感覚を保ちましょう!", "Keep practicing to stay sharp!")}
             action={
-              <Link
-                href="/guide/jlpt/practice"
-                className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90"
-              >
+              <Link href="/guide/jlpt/practice" className={JLPT_BTN_PRIMARY}>
                 {t("去刷题", "演習へ", "Practice")}
               </Link>
             }

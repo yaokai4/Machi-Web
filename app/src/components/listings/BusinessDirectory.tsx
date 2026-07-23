@@ -305,11 +305,11 @@ export function BusinessPublicPage({ businessId }: { businessId: string }) {
               {hoursText ? <InfoRow icon={Clock} label={pick(locale, "营业时间", "営業時間", "Hours")} value={hoursText} /> : null}
               {business.contact_method ? <InfoRow icon={Phone} label={pick(locale, "联系方式", "連絡先", "Contact")} value={business.contact_method} /> : null}
               {business.website ? (
-                <a href={business.website} target="_blank" rel="noopener noreferrer" className="flex items-start gap-2.5 rounded-2xl bg-kx-surface p-3 transition hover:bg-blue-50/70 dark:hover:bg-blue-500/10">
-                  <Globe className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                <a href={business.website} target="_blank" rel="noopener noreferrer" className="flex items-start gap-2.5 rounded-2xl bg-kx-surface p-3 transition hover:bg-kx-accentSoft/70">
+                  <Globe className="mt-0.5 h-4 w-4 shrink-0 text-kx-accent" />
                   <span className="min-w-0">
                     <span className="block text-xs font-bold text-kx-subtle">{pick(locale, "官网 / 社媒", "公式サイト / SNS", "Website / social")}</span>
-                    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-sm font-black text-blue-600 dark:text-blue-400"><span className="min-w-0 break-all">{business.website}</span><ExternalLink className="h-3 w-3 shrink-0" /></span>
+                    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-sm font-black text-kx-accent"><span className="min-w-0 break-all">{business.website}</span><ExternalLink className="h-3 w-3 shrink-0" /></span>
                   </span>
                 </a>
               ) : null}

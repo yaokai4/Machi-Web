@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { GraduationCap, Loader, Lock, Timer, ArrowLeft, History, Trophy, ChevronRight, Coins } from "lucide-react";
+import { GraduationCap, Loader, Lock, Timer, ArrowLeft, History, Trophy, ChevronRight, Coins, ListChecks, NotebookPen } from "lucide-react";
 import {
   guide,
   type GuideJlptExam,
@@ -18,7 +19,6 @@ import { ScaledScorePanel } from "./ScaledScorePanel";
 import { APIError, isAuthRequiredError } from "@/lib/api";
 import { useAuthPrompt, useToasts } from "@/lib/store";
 import { GuideShell, GuideSectionTitle } from "@/components/guide/GuideKit";
-import { InlineLoading, ErrorState } from "@/components/design/States";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 import {
   QuestionCard,
@@ -30,7 +30,14 @@ import {
   JlptStateCard,
   JlptScoreHero,
   JlptProgress,
+  JlptPageSkeleton,
+  JlptErrorCard,
+  JlptStickyBar,
+  JLPT_BTN_PRIMARY,
+  JLPT_BTN_GHOST,
+  JLPT_CARD,
   JLPT_LEVELS,
+  levelDifficulty,
   fmtDuration,
   type Tri,
 } from "../JlptKit";
@@ -282,18 +289,25 @@ export function ExamClient() {
         ) : null}
 
         {examsQ.isLoading ? (
-          <div className="mt-6">
-            <InlineLoading />
-          </div>
+          <JlptPageSkeleton t={t} variant="list" />
         ) : examsQ.isError ? (
-          <div className="mt-6">
-            <ErrorState />
-          </div>
+          <JlptErrorCard
+            t={t}
+            onRetry={() => examsQ.refetch()}
+            retrying={examsQ.isFetching}
+            title={t("模考列表加载失败", "模試一覧を読み込めませんでした", "Couldn't load the exam list")}
+          />
         ) : !examsQ.data?.exams?.length ? (
           <JlptStateCard
             icon={GraduationCap}
             title={t("该等级暂无模考", "このレベルの模試はまだありません", "No exams for this level yet")}
             body={t("换个等级看看,或先去刷题。", "他のレベルを見るか、まず演習しましょう。", "Try another level, or start with practice.")}
+            action={
+              <Link href="/guide/jlpt/practice" className={JLPT_BTN_PRIMARY}>
+                <ListChecks className="h-4 w-4" />
+                {t("先去刷题", "演習をする", "Practice instead")}
+              </Link>
+            }
           />
         ) : (
           <section className="mt-4">
@@ -419,20 +433,20 @@ function StartConfirmation({
       aria-modal={false}
       aria-labelledby="jlpt-start-confirm-title"
       aria-describedby="jlpt-start-confirm-copy jlpt-start-refund-policy"
-      className="mt-5 rounded-[24px] border border-[rgb(var(--kx-living-accent))]/25 bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_24px_54px_-38px_rgb(var(--kx-shadow)/0.75)]"
+      className={[JLPT_CARD, "mt-5 border-[rgb(var(--kx-living-accent))]/25 p-5 sm:p-6"].join(" ")}
     >
-      <p className="text-[11px] font-black uppercase tracking-[0.16em] text-[rgb(var(--kx-living-accent))]">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[rgb(var(--kx-living-accent))]">
         {t("开考前确认", "受験前の確認", "Confirm before starting")}
       </p>
       <h2
         ref={headingRef}
         id="jlpt-start-confirm-title"
         tabIndex={-1}
-        className="mt-1.5 text-lg font-black text-[rgb(var(--kx-living-ink))] outline-none"
+        className="mt-1.5 text-lg font-bold text-[rgb(var(--kx-living-ink))] outline-none"
       >
         {title}
       </h2>
-      <p id="jlpt-start-confirm-copy" className="mt-2 text-sm font-semibold leading-relaxed text-[rgb(var(--kx-living-muted))]">
+      <p id="jlpt-start-confirm-copy" className="mt-2 text-sm leading-relaxed text-[rgb(var(--kx-living-muted))]">
         {confirmationCopy}
       </p>
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -443,22 +457,22 @@ function StartConfirmation({
           [t("解锁来源", "利用権", "Access source"), accessSource],
         ].map(([label, value]) => (
           <div key={label} className="rounded-2xl bg-[rgb(var(--kx-living-ink))]/[0.04] px-3 py-2.5">
-            <p className="text-[10px] font-bold text-[rgb(var(--kx-living-muted))]">{label}</p>
-            <p className="mt-0.5 truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">{value}</p>
+            <p className="text-[10px] font-medium text-[rgb(var(--kx-living-muted))]">{label}</p>
+            <p className="mt-0.5 truncate text-sm font-bold tabular-nums text-[rgb(var(--kx-living-ink))]">{value}</p>
           </div>
         ))}
       </div>
       {preflight.shortfall > 0 ? (
-        <p className="mt-3 rounded-2xl bg-amber-500/[0.12] px-3.5 py-2.5 text-xs font-bold text-amber-700 dark:text-amber-300">
+        <p className="mt-3 rounded-2xl bg-amber-500/[0.12] px-3.5 py-2.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
           {t(`还差 ${preflight.shortfall} Machi 币，请先到钱包充值。`, `${preflight.shortfall} Machi コイン不足しています。先にウォレットでチャージしてください。`, `You need ${preflight.shortfall} more Machi Coins. Top up your wallet first.`)}
         </p>
       ) : null}
       {locked ? (
-        <p className="mt-3 rounded-2xl bg-[rgb(var(--kx-living-accent))]/[0.1] px-3.5 py-2.5 text-xs font-bold text-[rgb(var(--kx-living-accent))]">
+        <p className="mt-3 rounded-2xl bg-[rgb(var(--kx-living-accent))]/[0.08] px-3.5 py-2.5 text-xs font-semibold text-[rgb(var(--kx-living-accent))]">
           {t("当前账户没有这场考试的访问权限。", "この試験へのアクセス権がありません。", "Your account does not have access to this exam.")}
         </p>
       ) : null}
-      <p id="jlpt-start-refund-policy" className="mt-3 text-[11px] font-medium leading-relaxed text-[rgb(var(--kx-living-muted))]">
+      <p id="jlpt-start-refund-policy" className="mt-3 text-[11px] leading-relaxed text-[rgb(var(--kx-living-muted))]">
         {refundPolicyCopy}
       </p>
       <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -466,7 +480,7 @@ function StartConfirmation({
           type="button"
           onClick={onCancel}
           disabled={pending}
-          className="rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] px-5 py-2.5 text-sm font-black text-[rgb(var(--kx-living-ink))] disabled:opacity-60"
+          className={["py-2.5", JLPT_BTN_GHOST].join(" ")}
         >
           {t("取消", "キャンセル", "Cancel")}
         </button>
@@ -474,7 +488,7 @@ function StartConfirmation({
           type="button"
           onClick={onConfirm}
           disabled={pending || !preflight.canStart}
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white disabled:opacity-50"
+          className={["py-2.5", JLPT_BTN_PRIMARY].join(" ")}
         >
           {pending ? <Loader className="h-4 w-4 animate-spin" /> : preflight.requiredCoins > 0 ? <Coins className="h-4 w-4" /> : <GraduationCap className="h-4 w-4" />}
           {preflight.requiredCoins > 0
@@ -487,52 +501,62 @@ function StartConfirmation({
 }
 
 function ExamCard({ t, exam, onStart, pending }: { t: Tri; exam: GuideJlptExam; onStart: () => void; pending: boolean }) {
+  // Level badge deepens with difficulty — same controlled ramp as the ladder.
+  const tint = 0.1 + (levelDifficulty(exam.level) - 1) * 0.035;
   return (
-    <div className="flex flex-col rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-[18px] shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)] transition duration-200 hover:-translate-y-0.5 hover:border-[rgb(var(--kx-living-accent))]/35 hover:shadow-[0_26px_52px_-34px_rgb(var(--kx-shadow)/0.7)]">
-      <div className="flex items-start gap-3">
-        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[rgb(var(--kx-living-accent))]/[0.1] text-sm font-black text-[rgb(var(--kx-living-accent))]">
+    <div className={[JLPT_CARD, "flex flex-col p-5 transition duration-200 hover:-translate-y-0.5 hover:border-[rgb(var(--kx-living-accent))]/30 hover:shadow-[0_28px_56px_-38px_rgb(var(--kx-shadow)/0.6)] motion-reduce:hover:translate-y-0"].join(" ")}>
+      <div className="flex items-start gap-3.5">
+        <span
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-[15px] font-black text-[rgb(var(--kx-living-accent))]"
+          style={{ background: `rgb(var(--kx-living-accent) / ${tint})` }}
+        >
           {exam.level}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="flex items-center gap-1.5 text-[15px] font-black leading-tight text-[rgb(var(--kx-living-ink))]">
+          <p className="flex items-center gap-1.5 text-[15px] font-bold leading-snug text-[rgb(var(--kx-living-ink))]">
             {exam.title}
-            {exam.isMemberOnly ? <Lock className="h-3.5 w-3.5 shrink-0 text-[rgb(var(--kx-living-accent))]" /> : null}
+            {exam.isMemberOnly ? <Lock className="h-3.5 w-3.5 shrink-0 text-[rgb(var(--kx-living-accent))]" aria-label={t("会员专属", "会員限定", "Members only")} /> : null}
           </p>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {exam.isPaper && exam.sectionCount ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-accent))]/[0.12] px-2 py-0.5 text-[11px] font-black text-[rgb(var(--kx-living-accent))]">
-                {t(`分科整卷 · ${exam.sectionCount} 科`, `分野別 · ${exam.sectionCount} 科目`, `${exam.sectionCount} timed sections`)}
-              </span>
-            ) : null}
-            <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] px-2 py-0.5 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
-              {t(`${exam.questionCount} 题`, `${exam.questionCount} 問`, `${exam.questionCount} Q`)}
-            </span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] px-2 py-0.5 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+          {/* One quiet meta line instead of a chip pile-up. */}
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-[rgb(var(--kx-living-muted))]">
+            <span className="tabular-nums">{t(`${exam.questionCount} 题`, `${exam.questionCount} 問`, `${exam.questionCount} questions`)}</span>
+            <span aria-hidden>·</span>
+            <span className="inline-flex items-center gap-1 tabular-nums">
               <Timer className="h-3 w-3" />
               {exam.durationSeconds > 0 ? fmtDuration(exam.durationSeconds) : t("不限时", "時間無制限", "Untimed")}
             </span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] px-2 py-0.5 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+            <span aria-hidden>·</span>
+            <span>
               {exam.isPaper || exam.scoreMode === "jlpt_scaled"
                 ? t("JLPT 标准出分", "JLPT 準拠採点", "JLPT-style scoring")
                 : t(`合格线 ${exam.passScore}`, `合格 ${exam.passScore}`, `Pass ${exam.passScore}`)}
             </span>
-            {exam.coinCost && exam.coinCost > 0 ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/[0.14] px-2 py-0.5 text-[11px] font-black text-amber-600 dark:text-amber-400">
-                <Coins className="h-3 w-3" />
-                {exam.coinCost}
-                {exam.coinCostMember && exam.coinCostMember < exam.coinCost
-                  ? t(` · 会员 ${exam.coinCostMember}`, ` · 会員 ${exam.coinCostMember}`, ` · Member ${exam.coinCostMember}`)
-                  : ""}
-              </span>
-            ) : null}
-          </div>
+          </p>
+          {(exam.isPaper && exam.sectionCount) || (exam.coinCost && exam.coinCost > 0) ? (
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+              {exam.isPaper && exam.sectionCount ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-accent))]/[0.1] px-2.5 py-1 text-[11px] font-bold text-[rgb(var(--kx-living-accent))]">
+                  {t(`分科整卷 · ${exam.sectionCount} 科`, `分野別 · ${exam.sectionCount} 科目`, `${exam.sectionCount} timed sections`)}
+                </span>
+              ) : null}
+              {exam.coinCost && exam.coinCost > 0 ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/[0.12] px-2.5 py-1 text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                  <Coins className="h-3 w-3" />
+                  {exam.coinCost}
+                  {exam.coinCostMember && exam.coinCostMember < exam.coinCost
+                    ? t(` · 会员 ${exam.coinCostMember}`, ` · 会員 ${exam.coinCostMember}`, ` · Member ${exam.coinCostMember}`)
+                    : ""}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
       <button
         type="button"
         onClick={onStart}
         disabled={pending}
-        className="mt-4 inline-flex items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-4 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
+        className={["mt-4 w-full py-2.5", JLPT_BTN_PRIMARY].join(" ")}
       >
         {pending ? <Loader className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
         {t("开始模考", "模試を受ける", "Start exam")}
@@ -645,8 +669,22 @@ function PaperFlow({
     },
   });
 
-  if (paperQ.isLoading) return <InlineLoading />;
-  if (paperQ.isError || !paperQ.data) return <ErrorState />;
+  if (paperQ.isLoading) return <JlptPageSkeleton t={t} variant="rows" />;
+  if (paperQ.isError || !paperQ.data) {
+    return (
+      <JlptErrorCard
+        t={t}
+        onRetry={() => paperQ.refetch()}
+        retrying={paperQ.isFetching}
+        title={t("整卷信息加载失败", "模試情報を読み込めませんでした", "Couldn't load this paper")}
+        secondary={
+          <button type="button" onClick={onExit} className={JLPT_BTN_GHOST}>
+            {t("返回列表", "一覧へ", "Back to list")}
+          </button>
+        }
+      />
+    );
+  }
 
   if (confirmedStart) {
     return (
@@ -714,12 +752,12 @@ function PaperFlow({
     return (
       <div>
         <JlptPageHeader eyebrow={paperTitle} title={t("下一科目", "次の科目", "Next section")} />
-        <div className="mt-6 rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-6 text-center shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
+        <div className={[JLPT_CARD, "mt-6 rounded-[28px] px-6 py-9 text-center"].join(" ")}>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[rgb(var(--kx-living-accent))]">
             {t(`第 ${idx + 1} / ${sections.length} 科`, `${idx + 1} / ${sections.length} 科目`, `Section ${idx + 1} / ${sections.length}`)}
           </p>
-          <p className="mt-2 text-xl font-black text-[rgb(var(--kx-living-ink))]">{cur.title}</p>
-          <p className="mt-1 text-sm font-semibold text-[rgb(var(--kx-living-muted))]">
+          <p className="mt-2 text-xl font-black tracking-[-0.01em] text-[rgb(var(--kx-living-ink))]">{cur.title}</p>
+          <p className="mt-1.5 text-sm text-[rgb(var(--kx-living-muted))]">
             {cur.section === "listening"
               ? t("聴解：本科目含听力音频，请准备好耳机。", "聴解：音声問題があります。イヤホンをご準備ください。", "Listening: this section includes audio — headphones recommended.")
               : t(`${cur.questionCount} 题 · ${fmtDuration(cur.durationSeconds)}`, `${cur.questionCount} 問 · ${fmtDuration(cur.durationSeconds)}`, `${cur.questionCount} Q · ${fmtDuration(cur.durationSeconds)}`)}
@@ -728,7 +766,7 @@ function PaperFlow({
             type="button"
             onClick={() => preflight.mutate(cur)}
             disabled={startSection.isPending || preflight.isPending}
-            className="mt-5 inline-flex items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-6 py-3 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
+            className={["mt-6 px-7", JLPT_BTN_PRIMARY].join(" ")}
           >
             {startSection.isPending || preflight.isPending ? <Loader className="h-4 w-4 animate-spin" /> : null}
             {t("开始本科目", "この科目を開始", "Start this section")}
@@ -762,14 +800,14 @@ function PaperFlow({
         {sections.map((s, i) => (
           <div
             key={s.id}
-            className="flex items-center gap-3 rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5"
+            className="flex items-center gap-3.5 rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5"
           >
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[rgb(var(--kx-living-accent))]/[0.1] text-sm font-black text-[rgb(var(--kx-living-accent))]">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[rgb(var(--kx-living-accent))]/[0.09] text-sm font-bold text-[rgb(var(--kx-living-accent))]">
               {i + 1}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">{s.title}</p>
-              <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+              <p className="truncate text-sm font-bold text-[rgb(var(--kx-living-ink))]">{s.title}</p>
+              <p className="mt-0.5 text-[11px] font-medium text-[rgb(var(--kx-living-muted))]">
                 {s.questionCount} {t("题", "問", "Q")} · {fmtDuration(s.durationSeconds)}
                 {s.section === "listening" ? ` · ${t("含听力音频", "音声あり", "with audio")}` : ""}
               </p>
@@ -781,7 +819,7 @@ function PaperFlow({
         type="button"
         onClick={() => paperQ.data?.paper && preflight.mutate(paperQ.data.paper)}
         disabled={startSection.isPending || preflight.isPending || !sections.length}
-        className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3.5 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
+        className={["mt-6 w-full py-3.5", JLPT_BTN_PRIMARY].join(" ")}
       >
         {startSection.isPending || preflight.isPending ? <Loader className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
         {attemptId ? t("恢复当前科目", "現在の科目を再開", "Resume current section") : t("检查价格并开始", "価格を確認して開始", "Check price and start")}
@@ -812,8 +850,23 @@ function PaperResult({
     queryFn: () => guide.jlptPaperResult(paperId, attemptId),
     retry: false,
   });
-  if (q.isLoading) return <InlineLoading />;
-  if (q.isError || !q.data) return <ErrorState />;
+  if (q.isLoading) return <JlptPageSkeleton t={t} variant="result" />;
+  if (q.isError || !q.data) {
+    return (
+      <JlptErrorCard
+        t={t}
+        onRetry={() => q.refetch()}
+        retrying={q.isFetching}
+        title={t("成绩加载失败", "結果を読み込めませんでした", "Couldn't load your result")}
+        body={t("成绩已安全保存在服务器,重试即可查看。", "結果はサーバーに保存されています。再試行してください。", "Your result is safely stored — just retry.")}
+        secondary={
+          <button type="button" onClick={onExit} className={JLPT_BTN_GHOST}>
+            {t("返回列表", "一覧へ", "Back to list")}
+          </button>
+        }
+      />
+    );
+  }
   const r = q.data;
   const paperPassed = r.officialScore?.passedReference ?? r.scaled?.passedWrittenReference ?? false;
   return (
@@ -826,43 +879,46 @@ function PaperResult({
         {r.officialScore ? (
           <section
             aria-label={t("整卷参考成绩", "総合参考スコア", "Full-paper reference score")}
-            className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]"
+            className={[JLPT_CARD, "rounded-[28px] p-6 text-center"].join(" ")}
           >
-            <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[rgb(var(--kx-living-muted))]">
               {t("整卷参考分", "総合参考スコア", "Full-paper reference score")}
             </p>
-            <p className="mt-2 text-3xl font-black text-[rgb(var(--kx-living-ink))]">
-              {r.officialScore.total}<span className="text-base text-[rgb(var(--kx-living-muted))]"> / {r.officialScore.totalMax}</span>
+            <p className="mt-3 leading-none">
+              <span className={["text-[52px] font-black tabular-nums tracking-[-0.02em]", paperPassed ? "text-emerald-600 dark:text-emerald-400" : "text-[rgb(var(--kx-living-accent))]"].join(" ")}>
+                {r.officialScore.total}
+              </span>
+              <span className="ml-1.5 text-base font-semibold text-[rgb(var(--kx-living-muted))]">/ {r.officialScore.totalMax}</span>
             </p>
-            <p className="mt-1 text-xs font-semibold text-[rgb(var(--kx-living-muted))]">
+            <p className="mt-3 text-xs font-medium text-[rgb(var(--kx-living-muted))]">
               {t(`参考总分线 ${r.officialScore.passLine}，且各得分区分均须达基准`, `参考総合ライン ${r.officialScore.passLine}、各得点区分の基準も必要`, `Reference total ${r.officialScore.passLine}, with every score division above its minimum`)}
             </p>
-            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            <div className="mt-5 grid gap-2 sm:grid-cols-3">
               {r.officialScore.divisions.map((division) => (
                 <div key={division.key} className="rounded-2xl bg-[rgb(var(--kx-living-canvas))] px-3 py-3">
-                  <p className="text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+                  <p className="text-[11px] font-medium text-[rgb(var(--kx-living-muted))]">
                     {localizedScoreDivisionLabel(language, division.key, division.label)}
                   </p>
-                  <p className="mt-1 text-sm font-black text-[rgb(var(--kx-living-ink))]">{division.scaled} / {division.scaledMax}</p>
+                  <p className="mt-1 text-sm font-bold tabular-nums text-[rgb(var(--kx-living-ink))]">{division.scaled} / {division.scaledMax}</p>
                 </div>
               ))}
             </div>
-            <p className="mt-4 text-[11px] leading-5 text-[rgb(var(--kx-living-muted))]">
+            <p className="mt-5 text-[11px] leading-5 text-[rgb(var(--kx-living-muted))]">
               {localizedScoreReferenceNote(language, "full")}
             </p>
           </section>
         ) : r.scaled ? <ScaledScorePanel t={t} language={language} scaled={r.scaled} /> : null}
         {!r.officialScore && r.listening ? (
-          <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
-            <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
+          <div className={[JLPT_CARD, "p-5"].join(" ")}>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgb(var(--kx-living-accent))]">
               {t("聴解（参考）", "聴解（参考）", "Listening (reference)")}
             </p>
-            <p className="mt-2 text-sm font-black text-[rgb(var(--kx-living-ink))]">
+            <p className="mt-2 text-sm font-bold text-[rgb(var(--kx-living-ink))]">
               {t(`答对 ${r.listening.correct}/${r.listening.total} · 得分 ${r.listening.score}`, `正解 ${r.listening.correct}/${r.listening.total} · ${r.listening.score}点`, `${r.listening.correct}/${r.listening.total} correct · ${r.listening.score}`)}
             </p>
           </div>
         ) : null}
-        <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-2">
+        <div className={[JLPT_CARD, "p-2"].join(" ")}>
           {r.sections.map((s) => (
             <button
               key={s.examId}
@@ -872,8 +928,8 @@ function PaperResult({
               className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition hover:bg-[rgb(var(--kx-living-accent))]/[0.05] disabled:opacity-60"
             >
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-bold text-[rgb(var(--kx-living-ink))]">{s.title || s.sectionLabel}</p>
-                <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+                <p className="truncate text-sm font-semibold text-[rgb(var(--kx-living-ink))]">{s.title || s.sectionLabel}</p>
+                <p className="mt-0.5 text-[11px] font-medium text-[rgb(var(--kx-living-muted))]">
                   {s.done ? t(`答对 ${s.correct}/${s.total}`, `正解 ${s.correct}/${s.total}`, `${s.correct}/${s.total} correct`) : t("未完成", "未完了", "Not done")}
                 </p>
               </div>
@@ -885,7 +941,7 @@ function PaperResult({
       <button
         type="button"
         onClick={onExit}
-        className="mt-6 inline-flex w-full items-center justify-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-5 py-3 text-sm font-black text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40"
+        className={["mt-6 w-full", JLPT_BTN_GHOST].join(" ")}
       >
         <History className="h-4 w-4" /> {t("返回模考列表", "一覧へ戻る", "Back to exams")}
       </button>
@@ -905,15 +961,15 @@ function HistoryRow({ t, item, onOpen }: { t: Tri; item: GuideJlptExamHistoryIte
     <>
       <span
         className={[
-          "grid h-10 w-10 shrink-0 place-items-center rounded-xl text-sm font-black tabular-nums",
-          displayPassed ? "bg-emerald-500/[0.14] text-emerald-600 dark:text-emerald-400" : "bg-[rgb(var(--kx-living-ink))]/[0.06] text-[rgb(var(--kx-living-muted))]",
+          "grid h-10 w-10 shrink-0 place-items-center rounded-xl text-sm font-bold tabular-nums",
+          displayPassed ? "bg-emerald-500/[0.12] text-emerald-600 dark:text-emerald-400" : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))]",
         ].join(" ")}
       >
         {displayScore}
       </span>
       <div className="min-w-0 flex-1 text-left">
-        <p className="truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">{item.title || item.level}</p>
-        <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+        <p className="truncate text-sm font-semibold text-[rgb(var(--kx-living-ink))]">{item.title || item.level}</p>
+        <p className="mt-0.5 text-[11px] font-medium tabular-nums text-[rgb(var(--kx-living-muted))]">
           {item.scaled ? `${item.scaled.writtenTotal}/${item.scaled.writtenMax} · ` : ""}
           {item.level} · {item.correct}/{item.total} · {item.startedAt.slice(0, 10)}
         </p>
@@ -922,19 +978,17 @@ function HistoryRow({ t, item, onOpen }: { t: Tri; item: GuideJlptExamHistoryIte
       {reviewable ? <ChevronRight className="h-4 w-4 shrink-0 text-[rgb(var(--kx-living-muted))]" /> : null}
     </>
   );
+  const rowCls =
+    "flex items-center gap-3 rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] px-4 py-3";
   if (!reviewable) {
-    return (
-      <div className="flex items-center gap-3 rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-4 py-3 shadow-[0_16px_38px_-38px_rgb(var(--kx-shadow)/0.7)]">
-        {inner}
-      </div>
-    );
+    return <div className={rowCls}>{inner}</div>;
   }
   return (
     <button
       type="button"
       onClick={onOpen}
       aria-label={t("回看这次模考", "この模試を復習", "Review this attempt")}
-      className="flex w-full items-center gap-3 rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-4 py-3 shadow-[0_16px_38px_-38px_rgb(var(--kx-shadow)/0.7)] transition hover:-translate-y-0.5 hover:border-[rgb(var(--kx-living-accent))]/40"
+      className={[rowCls, "w-full transition hover:border-[rgb(var(--kx-living-accent))]/35 hover:bg-[rgb(var(--kx-living-accent))]/[0.04]"].join(" ")}
     >
       {inner}
     </button>
@@ -1135,29 +1189,36 @@ function ExamRunner({
       <JlptPageHeader
         eyebrow={`${session.level} · ${t("模考", "模試", "Exam")}`}
         title={session.title}
-        right={
-          session.durationSeconds > 0 ? (
-            <div
-              className={[
-                "flex items-center gap-2 rounded-2xl px-3.5 py-2.5 ring-1 transition",
-                lowTime
-                  ? "bg-red-500/[0.1] text-red-600 ring-red-500/25 dark:text-red-400"
-                  : "bg-[rgb(var(--kx-living-accent))]/[0.1] text-[rgb(var(--kx-living-accent))] ring-[rgb(var(--kx-living-accent))]/20",
-              ].join(" ")}
-            >
-              <Timer className={["h-4 w-4", lowTime ? "animate-pulse" : ""].join(" ")} />
-              <span className="text-[17px] font-black leading-none tabular-nums">{fmtDuration(remaining)}</span>
-            </div>
-          ) : null
-        }
       />
 
-      <div className="sticky top-0 z-10 -mx-4 mt-4 border-b border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-bg))]/85 px-4 py-3 backdrop-blur sm:-mx-5 sm:px-5">
-        <JlptProgress
-          value={answeredCount}
-          total={session.total}
-          label={t(`已答 ${answeredCount} / ${session.total}`, `${answeredCount} / ${session.total} 回答`, `${answeredCount} / ${session.total} answered`)}
-        />
+      {/* Sticky exam head: progress + the countdown live together at the top of
+          the viewport, so remaining time never scrolls out of sight on a long
+          paper. Pure presentation — reads the same `remaining` state as before. */}
+      <div className="mt-4">
+        <JlptStickyBar>
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <JlptProgress
+                value={answeredCount}
+                total={session.total}
+                label={t(`已答 ${answeredCount} / ${session.total}`, `${answeredCount} / ${session.total} 回答`, `${answeredCount} / ${session.total} answered`)}
+              />
+            </div>
+            {session.durationSeconds > 0 ? (
+              <div
+                className={[
+                  "flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 ring-1 transition",
+                  lowTime
+                    ? "bg-red-500/[0.1] text-red-600 ring-red-500/25 dark:text-red-400"
+                    : "bg-[rgb(var(--kx-living-accent))]/[0.08] text-[rgb(var(--kx-living-accent))] ring-[rgb(var(--kx-living-accent))]/20",
+                ].join(" ")}
+              >
+                <Timer className={["h-4 w-4", lowTime ? "animate-pulse motion-reduce:animate-none" : ""].join(" ")} />
+                <span className="text-[15px] font-bold leading-none tabular-nums">{fmtDuration(remaining)}</span>
+              </div>
+            ) : null}
+          </div>
+        </JlptStickyBar>
       </div>
 
       <div className="mt-4 space-y-3">
@@ -1187,7 +1248,7 @@ function ExamRunner({
         type="button"
         onClick={doSubmit}
         disabled={sealing || submit.isPending}
-        className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3.5 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
+        className={["mt-5 w-full py-3.5", JLPT_BTN_PRIMARY].join(" ")}
       >
         {sealing || submit.isPending ? <Loader className="h-4 w-4 animate-spin" /> : null}
         {deadlineReached && submit.isError
@@ -1230,8 +1291,22 @@ function SessionReview({
     staleTime: 300_000,
   });
 
-  if (sessionQ.isLoading) return <InlineLoading />;
-  if (sessionQ.isError || !sessionQ.data) return <ErrorState />;
+  if (sessionQ.isLoading) return <JlptPageSkeleton t={t} variant="result" />;
+  if (sessionQ.isError || !sessionQ.data) {
+    return (
+      <JlptErrorCard
+        t={t}
+        onRetry={() => sessionQ.refetch()}
+        retrying={sessionQ.isFetching}
+        title={t("回看加载失败", "復習データを読み込めませんでした", "Couldn't load this review")}
+        secondary={
+          <button type="button" onClick={onBack} className={JLPT_BTN_GHOST}>
+            {t("返回历史成绩", "履歴に戻る", "Back to history")}
+          </button>
+        }
+      />
+    );
+  }
 
   const s = sessionQ.data;
   const passScore = examsQ.data?.exams?.find((e) => e.id === s.examId)?.passScore;
@@ -1317,6 +1392,24 @@ function ExamResult({
         )}
       </div>
 
+      {/* Action-oriented close: clear the wrong answers, or keep drilling. */}
+      <div className="mt-4 grid grid-cols-2 gap-2.5">
+        <Link
+          href="/guide/jlpt/review"
+          className="group flex items-center justify-center gap-2 rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.08] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 text-[13px] font-bold text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
+        >
+          <NotebookPen className="h-4 w-4 text-[rgb(var(--kx-living-accent))]" />
+          {t("错题已进错题本", "間違いノートへ", "Review wrong answers")}
+        </Link>
+        <Link
+          href="/guide/jlpt/practice"
+          className="group flex items-center justify-center gap-2 rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.08] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 text-[13px] font-bold text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
+        >
+          <ListChecks className="h-4 w-4 text-[rgb(var(--kx-living-accent))]" />
+          {t("继续刷题", "演習を続ける", "Keep practicing")}
+        </Link>
+      </div>
+
       <GuideSectionTitle title={t("逐题回看", "問題ごとの復習", "Question review")} />
       <div className="mt-2 space-y-3">
         {questions.map((q, i) => (
@@ -1337,7 +1430,7 @@ function ExamResult({
       <button
         type="button"
         onClick={onBack}
-        className="mt-6 inline-flex w-full items-center justify-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-5 py-3 text-sm font-black text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40"
+        className={["mt-6 w-full", JLPT_BTN_GHOST].join(" ")}
       >
         <History className="h-4 w-4" /> {backLabel}
       </button>

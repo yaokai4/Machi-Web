@@ -15,9 +15,25 @@ import { EmptyState, ErrorState, InlineLoading } from "@/components/design/State
 import { compactNumber, relativeTime } from "@/lib/format";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { ConfirmDialog } from "@/components/design/Dialog";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Locale } from "@/lib/i18n";
+import { FeedSkeleton } from "@/components/feed/FeedSkeleton";
 import type { KXComment, KXUser } from "@/lib/types";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
+
+// Same tiny local-copy pattern as PostCard's localize(): a handful of
+// detail-page strings that previously shipped hardcoded Simplified Chinese.
+function localize(locale: Locale, zhHans: string, zhHant: string, en: string, ja: string): string {
+  switch (locale) {
+    case "en":
+      return en;
+    case "ja":
+      return ja;
+    case "zh-Hant":
+      return zhHant;
+    default:
+      return zhHans;
+  }
+}
 
 export default function PostPageClient() {
   const params = useParams<{ id: string }>();
@@ -26,7 +42,7 @@ export default function PostPageClient() {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const id = params?.id as string;
 
   const [sort, setSort] = useState<"top" | "new">("top");
@@ -177,14 +193,37 @@ export default function PostPageClient() {
         <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label={t("msg_back")}>
           <ArrowLeft className="w-4 h-4" />
         </button>
-        <h1 className="text-center font-semibold">帖子详情</h1>
+        {/* Title names the author (mirrors iOS) instead of a generic
+            "post detail"; falls back to the plain label while loading. */}
+        <h1 className="min-w-0 truncate text-center font-semibold">
+          {postQuery.data?.author?.handle
+            ? localize(
+                locale,
+                `@${postQuery.data.author.handle} 的帖子`,
+                `@${postQuery.data.author.handle} 的貼文`,
+                `Post by @${postQuery.data.author.handle}`,
+                `@${postQuery.data.author.handle}さんの投稿`,
+              )
+            : localize(locale, "帖子", "貼文", "Post", "投稿")}
+        </h1>
         <span />
       </header>
 
       {postQuery.isLoading ? (
-        <InlineLoading />
+        <div className="px-3 sm:px-4 py-3 space-y-3">
+          <FeedSkeleton withMedia />
+        </div>
       ) : postQuery.isError || !postQuery.data ? (
-        <ErrorState onRetry={() => postQuery.refetch()} subtitle="帖子可能已删除或不存在。" />
+        <ErrorState
+          onRetry={() => postQuery.refetch()}
+          subtitle={localize(
+            locale,
+            "帖子可能已删除或不存在。",
+            "貼文可能已刪除或不存在。",
+            "This post may have been deleted or never existed.",
+            "この投稿は削除されたか、存在しない可能性があります。",
+          )}
+        />
       ) : (
         <div className="px-3 sm:px-4 py-3 space-y-3">
           <PostCard
@@ -207,10 +246,10 @@ export default function PostPageClient() {
               {isQuestion ? (
                 <span
                   className={clsx(
-                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ring-1",
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset",
                     resolved
-                      ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-400/20"
-                      : "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-200 dark:ring-sky-400/20",
+                      ? "bg-kx-accentSoft text-kx-accent ring-kx-accent/25"
+                      : "bg-kx-soft text-kx-subtle ring-kx-stroke/60",
                   )}
                 >
                   {resolved ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
@@ -229,14 +268,15 @@ export default function PostPageClient() {
                 <div className="flex-1">
                   {replyTo ? (
                     <div className="text-xs text-kx-subtle mb-1 inline-flex items-center gap-1">
-                      正在回复 <span className="text-kx-accent">@{replyTo.name}</span>
+                      {localize(locale, "正在回复", "正在回覆", "Replying to", "返信先")}{" "}
+                      <span className="text-kx-accent">@{replyTo.name}</span>
                       <button className="text-kx-muted hover:text-kx-text" onClick={() => setReplyTo(null)}>{t("action_cancel")}</button>
                     </div>
                   ) : null}
                   <textarea
                     value={reply}
                     onChange={(e) => setReply(e.target.value)}
-                    className="kx-textarea h-16 sm:h-20"
+                    className="kx-textarea h-16 rounded-kx-lg px-3.5 sm:h-20"
                     placeholder={replyTo ? t("comment_reply_placeholder") : t("comment_placeholder")}
                     onKeyDown={(e) => {
                       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -255,7 +295,8 @@ export default function PostPageClient() {
               </div>
             ) : (
               <div className="text-sm text-kx-subtle text-center py-3">
-                <button type="button" onClick={() => openAuthPrompt("comment")} className="kx-link font-bold">{t("login")}</button> 后即可评论。
+                <button type="button" onClick={() => openAuthPrompt("comment")} className="kx-link font-bold">{t("login")}</button>
+                {localize(locale, " 后即可评论。", " 後即可留言。", " to comment.", " するとコメントできます。")}
               </div>
             )}
 
@@ -274,7 +315,7 @@ export default function PostPageClient() {
                       className={clsx(
                         "rounded-kx-md border p-3",
                         root.is_accepted
-                          ? "border-emerald-300/70 bg-emerald-50/50 dark:border-emerald-400/25 dark:bg-emerald-500/5"
+                          ? "border-kx-accent/40 bg-kx-accentSoft/40"
                           : "border-kx-stroke/45 bg-kx-card/70",
                       )}
                     >
@@ -292,7 +333,7 @@ export default function PostPageClient() {
                                 id: comment.id,
                                 parentId: rootId,
                                 userId: comment.author_id,
-                                name: comment.author?.handle || "用户",
+                                name: comment.author?.handle || t("unknown_user"),
                               })
                             : openAuthPrompt("comment")
                         }
@@ -331,7 +372,7 @@ export default function PostPageClient() {
                                       id: comment.id,
                                       parentId: rootId,
                                       userId: comment.author_id,
-                                      name: comment.author?.handle || "用户",
+                                      name: comment.author?.handle || t("unknown_user"),
                                     })
                                   : openAuthPrompt("comment")
                               }
@@ -455,11 +496,11 @@ function CommentItem({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 min-w-0">
           <Link href={comment.author?.handle ? `/u/${comment.author.handle}` : "#"} className="font-semibold text-sm truncate hover:underline">
-            {comment.author?.display_name || "用户"}
+            {comment.author?.display_name || t("unknown_user")}
           </Link>
           {showOfficialBadge(comment.author) ? <OfficialBadge /> : showVerifiedBadge(comment.author) ? <VerifiedBadge /> : null}
           {comment.is_accepted ? (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-400/20">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-kx-accentSoft px-1.5 py-0.5 text-[11px] font-semibold text-kx-accent ring-1 ring-inset ring-kx-accent/25">
               <CheckCircle2 className="h-3 w-3" /> {t("answer_accepted_badge")}
             </span>
           ) : null}
@@ -468,12 +509,12 @@ function CommentItem({
         <p className="text-sm text-kx-text whitespace-pre-wrap break-words mt-1">{comment.content}</p>
         <div className="flex items-center gap-5 mt-2 text-xs font-medium">
           <button
-            className="inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-rose-500"
+            className="inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-kx-like"
             onClick={() => onLike(comment)}
             aria-pressed={comment.liked}
           >
-            <Heart className={clsx("h-[15px] w-[15px] transition-transform duration-150", comment.liked ? "fill-rose-500 text-rose-500 scale-110" : "")} />
-            <span className={comment.liked ? "font-semibold text-rose-500" : ""}>{compactNumber(comment.like_count)}</span>
+            <Heart className={clsx("h-[15px] w-[15px] transition-transform duration-150", comment.liked ? "fill-kx-like text-kx-like scale-110" : "")} />
+            <span className={comment.liked ? "font-semibold text-kx-like" : ""}>{compactNumber(comment.like_count)}</span>
           </button>
           <button
             className="inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-kx-accent"
@@ -485,7 +526,7 @@ function CommentItem({
             <button
               className={clsx(
                 "inline-flex items-center gap-1.5 py-1 transition-colors",
-                comment.is_accepted ? "font-semibold text-emerald-600" : "text-kx-muted hover:text-emerald-600",
+                comment.is_accepted ? "font-semibold text-kx-accent" : "text-kx-muted hover:text-kx-accent",
               )}
               onClick={() => onAccept?.(comment)}
               aria-pressed={comment.is_accepted}

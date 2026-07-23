@@ -622,7 +622,7 @@ export default async function JlptLevelPage({ params }: { params: Promise<{ leve
               <p className="text-sm font-black text-[rgb(var(--kx-living-accent))]">{ui.placementTitle}</p>
               <p className="mt-0.5 text-xs font-medium text-[rgb(var(--kx-living-muted))]">{ui.placementSub}</p>
             </div>
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-white transition group-hover:translate-x-0.5">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))] transition group-hover:translate-x-0.5">
               <ArrowRight className="h-4 w-4" />
             </span>
           </Link>

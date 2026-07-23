@@ -27,7 +27,7 @@ function ReservationCard({ booking, onCancel, cancelling }: { booking: KXBooking
   const accent = cancelled || isPast ? "#94a3b8" : "rgb(var(--kx-living-accent))";
   return (
     <section
-      className="flex items-center gap-4 rounded-3xl border border-slate-200/70 bg-white p-4 transition"
+      className="flex items-center gap-4 rounded-3xl border border-kx-stroke/50 bg-kx-card p-4 transition"
       style={{ opacity: cancelled ? 0.62 : 1 }}
     >
       <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl" style={{ background: `${accent}1f`, color: accent }}>
@@ -37,12 +37,12 @@ function ReservationCard({ booking, onCancel, cancelling }: { booking: KXBooking
       <div className="min-w-0 flex-1">
         <Link
           href={booking.listing_id ? `/listings/${encodeURIComponent(booking.listing_id)}` : "#"}
-          className="flex items-center gap-1 text-[15px] font-black text-slate-950 hover:text-[rgb(var(--kx-living-accent))]"
+          className="flex items-center gap-1 text-[15px] font-black text-kx-text hover:text-kx-accent"
         >
           <span className={`truncate ${cancelled ? "line-through" : ""}`}>{booking.listing_title || "预约"}</span>
-          <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+          <ChevronRight className="h-4 w-4 shrink-0 text-kx-subtle" />
         </Link>
-        <p className="mt-0.5 text-sm font-semibold text-slate-500">{fmtDateTime(booking.start_at)}</p>
+        <p className="mt-0.5 text-sm font-semibold text-kx-muted">{fmtDateTime(booking.start_at)}</p>
         <span
           className="mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-bold"
           style={{ background: `${accent}1f`, color: accent }}
@@ -55,7 +55,7 @@ function ReservationCard({ booking, onCancel, cancelling }: { booking: KXBooking
           type="button"
           disabled={cancelling}
           onClick={() => onCancel(booking)}
-          className="shrink-0 rounded-full px-3 py-1.5 text-sm font-bold text-rose-500 transition hover:bg-rose-50 disabled:opacity-50"
+          className="shrink-0 rounded-full px-3 py-1.5 text-sm font-bold text-kx-danger transition hover:bg-kx-danger/10 disabled:opacity-50"
         >
           {cancelling ? "取消中…" : "取消"}
         </button>
@@ -96,8 +96,8 @@ export function MyReservationsPage() {
             <CalendarClock className="h-5 w-5" />
           </span>
           <div>
-            <h1 className="text-xl font-black text-slate-950">我的预约</h1>
-            <p className="text-sm font-semibold text-slate-500">看房、到店与服务的预约时段</p>
+            <h1 className="text-xl font-black text-kx-text">我的预约</h1>
+            <p className="text-sm font-semibold text-kx-muted">看房、到店与服务的预约时段</p>
           </div>
         </div>
 
@@ -105,20 +105,20 @@ export function MyReservationsPage() {
           {query.isLoading ? (
             <>
               {[0, 1, 2].map((i) => (
-                <div key={i} className="h-24 animate-pulse rounded-3xl bg-slate-100" />
+                <div key={i} className="h-24 animate-pulse rounded-3xl bg-kx-soft" />
               ))}
             </>
           ) : null}
           {query.isError ? (
-            <section className="rounded-3xl border border-slate-200/70 bg-white px-5 py-9 text-center">
-              <p className="text-base font-black text-slate-950">预约记录暂时无法加载</p>
-              <button type="button" onClick={() => query.refetch()} className="mt-3 rounded-full bg-slate-900 px-4 py-2 text-sm font-bold text-white">
+            <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card px-5 py-9 text-center">
+              <p className="text-base font-black text-kx-text">预约记录暂时无法加载</p>
+              <button type="button" onClick={() => query.refetch()} className="mt-3 rounded-full bg-kx-accent px-4 py-2 text-sm font-bold text-kx-onAccent">
                 重试
               </button>
             </section>
           ) : null}
           {items.length > 0 ? (
-            <p className="pt-1 text-xs font-black uppercase tracking-wide text-slate-400">已约时段</p>
+            <p className="pt-1 text-xs font-black uppercase tracking-wide text-kx-subtle">已约时段</p>
           ) : null}
           {items.map((b) => (
             <ReservationCard key={b.id} booking={b} onCancel={cancel} cancelling={false} />
@@ -126,16 +126,16 @@ export function MyReservationsPage() {
 
           {requests.length > 0 ? (
             <>
-              <p className="pt-3 text-xs font-black uppercase tracking-wide text-slate-400">预约请求</p>
+              <p className="pt-3 text-xs font-black uppercase tracking-wide text-kx-subtle">预约请求</p>
               {requests.map((inq) => <InquiryCard key={inq.id} inquiry={inq} />)}
             </>
           ) : null}
 
           {!query.isLoading && !query.isError && !requestsQuery.isLoading && items.length === 0 && requests.length === 0 ? (
-            <section className="rounded-3xl border border-slate-200/70 bg-white px-5 py-12 text-center">
-              <CalendarClock className="mx-auto h-8 w-8 text-slate-300" />
-              <p className="mt-3 text-base font-black text-slate-950">还没有预约</p>
-              <p className="mt-2 text-sm font-semibold text-slate-500">在房源、餐厅或服务详情里选择时段即可预约;看房、服务等预约也会显示在这里。</p>
+            <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card px-5 py-12 text-center">
+              <CalendarClock className="mx-auto h-8 w-8 text-kx-subtle/70" />
+              <p className="mt-3 text-base font-black text-kx-text">还没有预约</p>
+              <p className="mt-2 text-sm font-semibold text-kx-muted">在房源、餐厅或服务详情里选择时段即可预约;看房、服务等预约也会显示在这里。</p>
             </section>
           ) : null}
         </div>

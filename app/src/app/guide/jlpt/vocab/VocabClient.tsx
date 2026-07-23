@@ -209,7 +209,7 @@ export function VocabClient() {
               <button
                 type="button"
                 onClick={() => openAuthPrompt("generic")}
-                className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90"
+                className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90"
               >
                 {t("登录", "ログイン", "Log in")}
               </button>
@@ -228,7 +228,7 @@ export function VocabClient() {
             action={
               <a
                 href="/membership"
-                className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90"
+                className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90"
               >
                 {t("了解会员", "会員について", "See membership")}
               </a>
@@ -246,7 +246,7 @@ export function VocabClient() {
                 if (!deckDetailQ.data.words.length) return;
                 setView("quiz");
               }}
-              className="mt-5 inline-flex items-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90"
+              className="mt-5 inline-flex items-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90"
             >
               <Sparkles className="h-4 w-4" /> {t("考单词", "単語テスト", "Vocab quiz")}
             </button>
@@ -391,7 +391,7 @@ function VocabQuiz({
             <button
               type="button"
               onClick={() => start.mutate()}
-              className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90"
+              className="rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90"
             >
               {t("重新开始", "もう一度", "Start")}
             </button>
@@ -447,7 +447,7 @@ function VocabQuiz({
           <button
             type="button"
             onClick={() => start.mutate()}
-            className="mt-5 w-full rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90"
+            className="mt-5 w-full rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90"
           >
             {t("再考一次", "もう一度", "Retake")}
           </button>
@@ -479,7 +479,7 @@ function VocabQuiz({
                         <span
                           className={[
                             "grid h-7 w-7 shrink-0 place-items-center rounded-lg text-xs font-black transition",
-                            sel ? "bg-[rgb(var(--kx-living-accent))] text-white" : "bg-[rgb(var(--kx-living-ink))]/[0.07] text-[rgb(var(--kx-living-muted))]",
+                            sel ? "bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))]" : "bg-[rgb(var(--kx-living-ink))]/[0.07] text-[rgb(var(--kx-living-muted))]",
                           ].join(" ")}
                         >
                           {String.fromCharCode(65 + ci)}
@@ -496,7 +496,7 @@ function VocabQuiz({
             type="button"
             onClick={() => submit.mutate()}
             disabled={Object.keys(answers).length !== quiz.questions.length || submit.isPending}
-            className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3.5 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-50"
+            className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3.5 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90 disabled:opacity-50"
           >
             {submit.isPending ? <Loader className="h-4 w-4 animate-spin" /> : null}
             {Object.keys(answers).length === quiz.questions.length

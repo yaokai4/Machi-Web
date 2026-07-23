@@ -49,14 +49,14 @@ const LEAD_TYPE_FILTERS: Array<[string, string]> = [
 ];
 
 const LEAD_STATUS_TONES: Record<string, string> = {
-  submitted: "bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
-  new: "bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
-  reviewing: "bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
-  contacted: "bg-cyan-50 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300",
-  confirmed: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
-  rescheduled: "bg-violet-50 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
+  submitted: "bg-kx-heat/10 text-kx-heat",
+  new: "bg-kx-heat/10 text-kx-heat",
+  reviewing: "bg-kx-verified/10 text-kx-verified",
+  contacted: "bg-kx-verified/10 text-kx-verified",
+  confirmed: "bg-kx-accentSoft text-kx-accent",
+  rescheduled: "bg-kx-heat/10 text-kx-heat",
   completed: "bg-kx-text text-kx-bg",
-  rejected: "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
+  rejected: "bg-kx-danger/10 text-kx-danger",
   closed: "bg-kx-soft text-kx-muted",
 };
 
@@ -94,15 +94,15 @@ export function MerchantListingsPanel() {
           <p className="mt-1 text-sm font-semibold text-kx-subtle">上下架、标记满约、维护价格与库存状态。</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href="/listings/create?type=local_service" className="inline-flex h-10 items-center gap-1.5 rounded-full bg-orange-500 px-4 text-xs font-black text-white shadow-sm transition hover:bg-orange-600">
+          <Link href="/listings/create?type=local_service" className="inline-flex h-10 items-center gap-1.5 rounded-full bg-kx-accent px-4 text-xs font-black text-kx-onAccent shadow-sm transition hover:brightness-95">
             <Plus className="h-3.5 w-3.5" />
             发布服务
           </Link>
-          <Link href="/listings/create?type=local_service&category=日本料理" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-xs font-black text-kx-subtle transition hover:border-rose-300 hover:text-rose-600">
+          <Link href="/listings/create?type=local_service&category=日本料理" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-xs font-black text-kx-subtle transition hover:border-kx-accent/40 hover:text-kx-accent">
             <Utensils className="h-3.5 w-3.5" />
             发布餐厅
           </Link>
-          <Link href="/listings/create?type=discount" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-xs font-black text-kx-subtle transition hover:border-orange-300 hover:text-orange-600">
+          <Link href="/listings/create?type=discount" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-xs font-black text-kx-subtle transition hover:border-kx-heat/40 hover:text-kx-heat">
             <Tag className="h-3.5 w-3.5" />
             发布优惠
           </Link>
@@ -136,13 +136,13 @@ function MerchantListingRow({ listing, pending, onStatus }: { listing: KXCityLis
         {cover ? (
           <Image src={cover} alt={listing.title} fill sizes="96px" className="object-cover" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center text-orange-400"><Store className="h-6 w-6" /></span>
+          <span className="absolute inset-0 grid place-items-center text-kx-heat/60"><Store className="h-6 w-6" /></span>
         )}
       </Link>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="truncate text-sm font-black text-kx-text">{cleanListingText(listing.title) || "服务"}</h3>
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${published ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300" : "bg-kx-soft text-kx-subtle"}`}>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${published ? "bg-kx-accentSoft text-kx-accent" : "bg-kx-soft text-kx-subtle"}`}>
             {formatListingStatus(listing.status, listing.type)}
           </span>
         </div>
@@ -155,15 +155,15 @@ function MerchantListingRow({ listing, pending, onStatus }: { listing: KXCityLis
       </div>
       <div className="flex flex-wrap gap-1.5 sm:flex-col">
         {published ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("hidden")} className="inline-flex h-8 items-center justify-center rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-subtle transition hover:border-amber-300 hover:text-amber-700 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("hidden")} className="inline-flex h-8 items-center justify-center rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-subtle transition hover:border-kx-heat/40 hover:text-kx-heat disabled:opacity-50">
             下架
           </button>
         ) : (
-          <button type="button" disabled={pending} onClick={() => onStatus("published")} className="inline-flex h-8 items-center justify-center rounded-full bg-emerald-600 px-3 text-[11px] font-black text-white transition hover:bg-emerald-700 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("published")} className="inline-flex h-8 items-center justify-center rounded-full bg-kx-accent px-3 text-[11px] font-black text-kx-onAccent transition hover:brightness-95 disabled:opacity-50">
             上架
           </button>
         )}
-        <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="inline-flex h-8 items-center justify-center gap-1 rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-subtle transition hover:border-blue-300 hover:text-blue-700">
+        <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="inline-flex h-8 items-center justify-center gap-1 rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-subtle transition hover:border-kx-accent/40 hover:text-kx-accent">
           查看
           <ExternalLink className="h-3 w-3" />
         </Link>
@@ -207,7 +207,7 @@ export function MerchantLeadsPanel() {
                 type="button"
                 onClick={() => setTypeFilter(value)}
                 data-active={typeFilter === value}
-                className="h-9 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-subtle transition data-[active=true]:border-emerald-600 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-700 dark:data-[active=true]:bg-emerald-500/15 dark:data-[active=true]:text-emerald-300"
+                className="h-9 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-subtle transition data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accentSoft data-[active=true]:text-kx-accent"
               >
                 {label}
               </button>
@@ -263,7 +263,7 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2 text-sm font-black text-kx-text">
             <span className="truncate">{fromUser?.display_name || fromUser?.handle || "Machi 用户"}</span>
-            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">{formatInquiryType(inquiry.type)}</span>
+            <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[10px] font-black text-kx-accent">{formatInquiryType(inquiry.type)}</span>
             <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[10px] font-black text-kx-subtle">正式记录</span>
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone}`}>
               {formatInquiryStatus(status)}
@@ -278,8 +278,8 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
       {details.length ? (
         <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
           {details.map((d) => (
-            <p key={d.label} className="rounded-lg bg-amber-50/70 px-2.5 py-1.5 text-xs font-bold text-amber-900 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/20">
-              <span className="text-amber-600 dark:text-amber-300">{d.label}：</span>{d.value}
+            <p key={d.label} className="rounded-lg bg-kx-heat/[0.08] px-2.5 py-1.5 text-xs font-bold text-kx-text ring-1 ring-kx-heat/20">
+              <span className="text-kx-heat">{d.label}：</span>{d.value}
             </p>
           ))}
         </div>
@@ -298,31 +298,31 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
           </Link>
         ) : null}
         {status !== "reviewing" && status !== "confirmed" && status !== "completed" && status !== "closed" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("reviewing")} className="inline-flex h-8 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 text-[11px] font-black text-blue-700 transition hover:bg-blue-100 disabled:opacity-50 dark:border-blue-500/30 dark:bg-blue-500/15 dark:text-blue-300 dark:hover:bg-blue-500/25">
+          <button type="button" disabled={pending} onClick={() => onStatus("reviewing")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-verified/30 bg-kx-verified/10 px-3 text-[11px] font-black text-kx-verified transition hover:bg-kx-verified/15 disabled:opacity-50">
             <CalendarClock className="h-3 w-3" />
             标记处理中
           </button>
         ) : null}
         {status !== "contacted" && status !== "confirmed" && status !== "completed" && status !== "closed" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("contacted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-3 text-[11px] font-black text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-300 dark:hover:bg-cyan-500/25">
+          <button type="button" disabled={pending} onClick={() => onStatus("contacted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-verified/30 bg-kx-verified/10 px-3 text-[11px] font-black text-kx-verified transition hover:bg-kx-verified/15 disabled:opacity-50">
             <Send className="h-3 w-3" />
             已联系
           </button>
         ) : null}
         {status !== "confirmed" && status !== "completed" && status !== "closed" && status !== "rejected" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("confirmed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300 dark:hover:bg-emerald-500/25">
+          <button type="button" disabled={pending} onClick={() => onStatus("confirmed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-accent/30 bg-kx-accentSoft px-3 text-[11px] font-black text-kx-accent transition hover:brightness-95 disabled:opacity-50">
             <CheckCircle2 className="h-3 w-3" />
             确认
           </button>
         ) : null}
         {status !== "rescheduled" && status !== "completed" && status !== "closed" && status !== "rejected" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("rescheduled")} className="inline-flex h-8 items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-3 text-[11px] font-black text-violet-700 transition hover:bg-violet-100 disabled:opacity-50 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300 dark:hover:bg-violet-500/25">
+          <button type="button" disabled={pending} onClick={() => onStatus("rescheduled")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-heat/30 bg-kx-heat/10 px-3 text-[11px] font-black text-kx-heat transition hover:bg-kx-heat/15 disabled:opacity-50">
             <CalendarClock className="h-3 w-3" />
             改期
           </button>
         ) : null}
         {status !== "rejected" && status !== "completed" && status !== "closed" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("rejected")} className="inline-flex h-8 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-3 text-[11px] font-black text-rose-700 transition hover:bg-rose-100 disabled:opacity-50 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-300 dark:hover:bg-rose-500/25">
+          <button type="button" disabled={pending} onClick={() => onStatus("rejected")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-danger/30 bg-kx-danger/10 px-3 text-[11px] font-black text-kx-danger transition hover:bg-kx-danger/15 disabled:opacity-50">
             <XCircle className="h-3 w-3" />
             拒绝
           </button>
@@ -339,7 +339,7 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
             关闭
           </button>
         ) : (
-          <button type="button" disabled={pending} onClick={() => onStatus("submitted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-muted transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("submitted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-muted transition hover:border-kx-accent/40 hover:text-kx-accent disabled:opacity-50">
             <CalendarClock className="h-3 w-3" />
             重新打开
           </button>
@@ -382,9 +382,9 @@ export function MerchantReviewsPanel() {
           <p className="mt-1 text-sm font-semibold text-kx-subtle">认真回复每条点评能显著提升转化与信任。</p>
         </div>
         {summary && summary.count > 0 ? (
-          <div className="flex items-center gap-3 rounded-2xl bg-amber-50 px-4 py-2 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
-            <span className="flex items-center gap-1 text-lg font-black text-amber-600 dark:text-amber-300">
-              <Star className="h-4.5 w-4.5 fill-amber-400 text-amber-400" />
+          <div className="flex items-center gap-3 rounded-2xl bg-kx-heat/[0.08] px-4 py-2 ring-1 ring-kx-heat/20">
+            <span className="flex items-center gap-1 text-lg font-black text-kx-heat">
+              <Star className="h-4.5 w-4.5 fill-kx-heat text-kx-heat" />
               {summary.rating_avg.toFixed(1)}
             </span>
             <span className="text-xs font-bold text-kx-subtle">{summary.count} 条点评 · {summary.unreplied} 条待回复</span>
@@ -444,7 +444,7 @@ function MerchantReviewRow({
             <RatingStars value={review.rating} showValue={false} />
             <span className="font-bold">{(review.created_at || "").slice(0, 10)}</span>
             {review.listing_title ? (
-              <Link href={`/listings/${encodeURIComponent(review.listing_id)}`} className="inline-flex items-center gap-0.5 truncate font-bold text-blue-500 hover:text-blue-600">
+              <Link href={`/listings/${encodeURIComponent(review.listing_id)}`} className="inline-flex items-center gap-0.5 truncate font-bold text-kx-accent hover:underline">
                 {review.listing_title}
                 <ArrowUpRight className="h-3 w-3" />
               </Link>
@@ -454,8 +454,8 @@ function MerchantReviewRow({
       </div>
       {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-kx-subtle">{review.content}</p> : null}
       {review.owner_reply ? (
-        <div className="mt-2.5 rounded-xl bg-emerald-50/60 p-3 ring-1 ring-emerald-100 dark:bg-emerald-500/10 dark:ring-emerald-500/20">
-          <p className="flex items-center gap-1 text-xs font-black text-emerald-700 dark:text-emerald-300"><Store className="h-3.5 w-3.5" /> 我的回复</p>
+        <div className="mt-2.5 rounded-xl bg-kx-accentSoft/60 p-3 ring-1 ring-kx-accent/20">
+          <p className="flex items-center gap-1 text-xs font-black text-kx-accent"><Store className="h-3.5 w-3.5" /> 我的回复</p>
           <p className="mt-1 text-sm leading-6 text-kx-subtle">{review.owner_reply}</p>
         </div>
       ) : replying ? (
@@ -478,7 +478,7 @@ function MerchantReviewRow({
           </button>
         </div>
       ) : (
-        <button type="button" onClick={onStartReply} className="mt-2 text-xs font-black text-blue-600 transition hover:text-blue-700">
+        <button type="button" onClick={onStartReply} className="mt-2 text-xs font-black text-kx-accent transition hover:underline">
           回复点评
         </button>
       )}

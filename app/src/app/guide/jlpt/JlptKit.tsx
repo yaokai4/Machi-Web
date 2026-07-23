@@ -14,7 +14,7 @@ import Link from "next/link";
 import { useState, useRef, useEffect, useCallback, useMemo, type ComponentType, type ReactNode } from "react";
 import {
   Flame, Timer, Check, X, Lock, Sparkles, Loader, ChevronRight, Trophy,
-  Play, Pause, RotateCcw, Headphones, ChevronDown,
+  Play, Pause, RotateCcw, Headphones, ChevronDown, CloudOff, RefreshCw,
 } from "lucide-react";
 import {
   guide,
@@ -34,6 +34,23 @@ import {
 } from "./exam/examContract";
 
 export type Tri = (zh: string, ja: string, en: string) => string;
+
+/* ------------------------------------------------------------------ */
+/* Shared button + card vocabulary                                     */
+/* ------------------------------------------------------------------ */
+/* One accent, one ink — text on accent fills always reads through the
+ * --kx-on-accent token (white on the deep light-mode green, page ink on the
+ * dark-mode mint), so both themes stay WCAG-clean with zero dark: patches. */
+
+export const JLPT_BTN_PRIMARY =
+  "inline-flex items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3 text-sm font-bold text-[rgb(var(--kx-on-accent))] shadow-[0_14px_28px_-18px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90 active:scale-[0.99] disabled:opacity-55 disabled:active:scale-100";
+
+export const JLPT_BTN_GHOST =
+  "inline-flex items-center justify-center gap-2 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-5 py-3 text-sm font-bold text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))] disabled:opacity-55";
+
+/** The one quiet card surface every JLPT panel shares. */
+export const JLPT_CARD =
+  "rounded-[24px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] shadow-[0_24px_48px_-42px_rgb(var(--kx-shadow)/0.55)]";
 
 export const JLPT_LEVELS = ["N5", "N4", "N3", "N2", "N1"] as const;
 export type JlptLevel = (typeof JLPT_LEVELS)[number];
@@ -109,17 +126,17 @@ export function JlptPageHeader({
   right?: ReactNode;
 }) {
   return (
-    <header className="pt-4">
+    <header className="pt-5">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-[11px] font-black uppercase tracking-[0.2em] text-[rgb(var(--kx-living-accent))]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[rgb(var(--kx-living-accent))]">
             {eyebrow}
           </p>
-          <h1 className="mt-1.5 text-2xl font-black leading-[1.15] tracking-[-0.02em] text-[rgb(var(--kx-living-ink))]">
+          <h1 className="mt-2 text-[26px] font-black leading-[1.12] tracking-[-0.02em] text-[rgb(var(--kx-living-ink))] sm:text-[28px]">
             {title}
           </h1>
           {subtitle ? (
-            <p className="mt-2 max-w-[52ch] text-[13px] font-medium leading-relaxed text-[rgb(var(--kx-living-muted))] sm:text-sm">
+            <p className="mt-2.5 max-w-[52ch] text-[13px] leading-relaxed text-[rgb(var(--kx-living-muted))] sm:text-sm">
               {subtitle}
             </p>
           ) : null}
@@ -130,16 +147,142 @@ export function JlptPageHeader({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Loading / error primitives (three-state kit)                        */
+/* ------------------------------------------------------------------ */
+
+/** One shimmering placeholder block. Pulse is suppressed for
+ *  prefers-reduced-motion viewers (`motion-reduce:animate-none`). */
+export function JlptSkel({ className }: { className?: string }) {
+  return (
+    <div
+      aria-hidden
+      className={[
+        "animate-pulse rounded-2xl bg-[rgb(var(--kx-living-ink))]/[0.05] motion-reduce:animate-none",
+        className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+/** Page-shaped loading skeletons so first paint mirrors the final layout
+ *  instead of a lone spinner. Variants: zone landing / card list / scorecard. */
+export function JlptPageSkeleton({
+  t,
+  variant = "list",
+}: {
+  t: Tri;
+  variant?: "zone" | "list" | "result" | "rows";
+}) {
+  return (
+    <div role="status" className="mt-6 space-y-3">
+      <span className="sr-only">{t("加载中…", "読み込み中…", "Loading…")}</span>
+      {variant === "zone" ? (
+        <>
+          <JlptSkel className="h-44 rounded-[28px]" />
+          <JlptSkel className="h-[72px] rounded-2xl" />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <JlptSkel key={i} className="h-[92px] rounded-[24px]" />
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <JlptSkel className="h-[64px] rounded-[20px]" />
+            <JlptSkel className="h-[64px] rounded-[20px]" />
+          </div>
+        </>
+      ) : variant === "result" ? (
+        <>
+          <JlptSkel className="h-64 rounded-[28px]" />
+          <JlptSkel className="h-[72px] rounded-[22px]" />
+          <JlptSkel className="h-[72px] rounded-[22px]" />
+        </>
+      ) : variant === "rows" ? (
+        <>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <JlptSkel key={i} className="h-[76px] rounded-[22px]" />
+          ))}
+        </>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <JlptSkel key={i} className="h-[168px] rounded-[24px]" />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Error state with a real way out: retry CTA (and an optional secondary
+ *  action) in the shared card language — network blips shouldn't dead-end. */
+export function JlptErrorCard({
+  t,
+  onRetry,
+  retrying,
+  title,
+  body,
+  secondary,
+}: {
+  t: Tri;
+  onRetry?: () => void;
+  retrying?: boolean;
+  title?: string;
+  body?: string;
+  secondary?: ReactNode;
+}) {
+  return (
+    <div className="mt-6 flex min-h-[34vh] flex-col items-center justify-center">
+      <div className={[JLPT_CARD, "w-full max-w-md px-6 py-9 text-center"].join(" ")}>
+        <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))]">
+          <CloudOff className="h-7 w-7" />
+        </span>
+        <p className="mt-4 text-[15px] font-bold leading-snug text-[rgb(var(--kx-living-ink))]">
+          {title || t("内容加载失败", "読み込みに失敗しました", "Couldn't load this")}
+        </p>
+        <p className="mx-auto mt-2 max-w-sm text-[13px] leading-relaxed text-[rgb(var(--kx-living-muted))]">
+          {body || t("网络似乎不太稳定，请重试一次。", "ネットワークが不安定なようです。もう一度お試しください。", "The network seems unstable — try again.")}
+        </p>
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+          {onRetry ? (
+            <button type="button" onClick={onRetry} disabled={retrying} className={JLPT_BTN_PRIMARY}>
+              {retrying ? <Loader className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {t("重试", "再試行", "Retry")}
+            </button>
+          ) : null}
+          {secondary}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Self-contained sticky top bar (progress + timer live here during exams).
+ *  Owns the negative-margin bleed against JlptNarrow's px-4/sm:px-5 padding so
+ *  callers never hand-tune offsets again. */
+export function JlptStickyBar({ children }: { children: ReactNode }) {
+  return (
+    <div className="sticky top-0 z-10 -mx-4 border-b border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-bg))]/85 px-4 py-3 backdrop-blur sm:-mx-5 sm:px-5">
+      {children}
+    </div>
+  );
+}
+
+/** Sticky bottom action bar: keeps the primary CTA under the thumb on mobile,
+ *  fading the page behind it with the same paper tone (no new hue). */
+export function JlptBottomBar({ children }: { children: ReactNode }) {
+  return (
+    <div className="sticky bottom-0 z-10 -mx-4 mt-4 bg-gradient-to-t from-[rgb(var(--kx-living-bg))] from-55% via-[rgb(var(--kx-living-bg))]/90 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-7 sm:-mx-5 sm:px-5">
+      {children}
+    </div>
+  );
+}
+
 /** A grouped control panel (filters, section pickers) in the shared card
  *  language: surface + hairline + soft shadow + rounded-[22px]. */
 export function JlptPanel({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div
-      className={[
-        "rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-4 shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)] sm:p-5",
-        className || "",
-      ].join(" ")}
-    >
+    <div className={[JLPT_CARD, "p-4 sm:p-5", className || ""].join(" ")}>
       {children}
     </div>
   );
@@ -148,7 +291,7 @@ export function JlptPanel({ children, className }: { children: ReactNode; classN
 /** A tiny uppercase field label above a picker. */
 export function JlptFieldLabel({ children }: { children: ReactNode }) {
   return (
-    <p className="mb-2 text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-muted))]">
+    <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgb(var(--kx-living-muted))]">
       {children}
     </p>
   );
@@ -171,22 +314,22 @@ export function JlptStateCard({
 }) {
   return (
     <div className="mt-6 flex min-h-[38vh] flex-col items-center justify-center">
-      <div className="w-full max-w-md rounded-[24px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-6 py-9 text-center shadow-[0_24px_52px_-42px_rgb(var(--kx-shadow)/0.7)]">
+      <div className={[JLPT_CARD, "w-full max-w-md px-6 py-9 text-center"].join(" ")}>
         {Icon ? (
           <span
             className={[
               "mx-auto grid h-14 w-14 place-items-center rounded-2xl",
               tone === "accent"
-                ? "bg-[rgb(var(--kx-living-accent))]/[0.12] text-[rgb(var(--kx-living-accent))]"
+                ? "bg-[rgb(var(--kx-living-accent))]/[0.1] text-[rgb(var(--kx-living-accent))]"
                 : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))]",
             ].join(" ")}
           >
             <Icon className="h-7 w-7" />
           </span>
         ) : null}
-        <p className="mt-4 text-[15px] font-black leading-snug text-[rgb(var(--kx-living-ink))]">{title}</p>
+        <p className="mt-4 text-[15px] font-bold leading-snug text-[rgb(var(--kx-living-ink))]">{title}</p>
         {body ? (
-          <p className="mx-auto mt-2 max-w-sm text-[13px] font-medium leading-relaxed text-[rgb(var(--kx-living-muted))]">
+          <p className="mx-auto mt-2 max-w-sm text-[13px] leading-relaxed text-[rgb(var(--kx-living-muted))]">
             {body}
           </p>
         ) : null}
@@ -225,55 +368,50 @@ export function JlptScoreHero({
   passScore?: number;
 }) {
   const isPass = !!pass;
-  const face = isPass ? "emerald" : "accent";
   return (
-    <div
-      className={[
-        "relative overflow-hidden rounded-[26px] border px-6 py-8 text-center shadow-[0_30px_64px_-46px_rgb(var(--kx-shadow)/0.7)]",
-        face === "emerald"
-          ? "border-emerald-500/30 bg-emerald-500/[0.07]"
-          : "border-[rgb(var(--kx-living-accent))]/25 bg-[rgb(var(--kx-living-accent))]/[0.06]",
-      ].join(" ")}
-    >
+    <div className={[JLPT_CARD, "relative overflow-hidden rounded-[28px] px-6 py-9 text-center"].join(" ")}>
+      {/* one faint halo behind the number — accent by default, emerald on pass */}
       <div
         aria-hidden
-        className="pointer-events-none absolute -top-16 left-1/2 h-52 w-52 -translate-x-1/2 rounded-full opacity-70 blur-2xl"
+        className="pointer-events-none absolute -top-20 left-1/2 h-56 w-56 -translate-x-1/2 rounded-full opacity-60 blur-3xl"
         style={{
           background: isPass
-            ? "radial-gradient(closest-side, rgb(16 185 129 / 0.22), transparent)"
-            : "radial-gradient(closest-side, rgb(var(--kx-living-accent) / 0.2), transparent)",
+            ? "radial-gradient(closest-side, rgb(16 185 129 / 0.16), transparent)"
+            : "radial-gradient(closest-side, rgb(var(--kx-living-accent) / 0.14), transparent)",
         }}
       />
-      {pass !== undefined ? (
-        <span
-          className={[
-            "relative inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wide ring-1",
-            isPass
-              ? "bg-emerald-500/[0.14] text-emerald-600 ring-emerald-500/25 dark:text-emerald-400"
-              : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] ring-[rgb(var(--kx-living-ink))]/[0.08]",
-          ].join(" ")}
-        >
-          {isPass ? <Trophy className="h-3.5 w-3.5" /> : null}
-          {isPass ? passLabel || t("合格", "合格", "Passed") : failLabel || t("未通过", "不合格", "Not passed")}
-        </span>
-      ) : null}
       {caption ? (
-        <p className="relative text-[11px] font-black uppercase tracking-[0.16em] text-[rgb(var(--kx-living-muted))]">
+        <p className="relative text-[11px] font-semibold uppercase tracking-[0.2em] text-[rgb(var(--kx-living-muted))]">
           {caption}
         </p>
       ) : null}
       <p
         className={[
           "relative text-[64px] font-black leading-none tracking-[-0.03em] tabular-nums",
-          pass !== undefined || caption ? "mt-3" : "mt-1",
+          caption ? "mt-3" : "mt-1",
           isPass ? "text-emerald-600 dark:text-emerald-400" : "text-[rgb(var(--kx-living-accent))]",
         ].join(" ")}
       >
         {score}
       </p>
-      <p className="relative mt-3 text-[13px] font-bold text-[rgb(var(--kx-living-ink))]">{metaLine}</p>
+      {pass !== undefined ? (
+        <p className="relative mt-4">
+          <span
+            className={[
+              "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold ring-1",
+              isPass
+                ? "bg-emerald-500/[0.12] text-emerald-600 ring-emerald-500/25 dark:text-emerald-400"
+                : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] ring-[rgb(var(--kx-living-ink))]/[0.08]",
+            ].join(" ")}
+          >
+            {isPass ? <Trophy className="h-3.5 w-3.5" /> : null}
+            {isPass ? passLabel || t("合格", "合格", "Passed") : failLabel || t("未通过", "不合格", "Not passed")}
+          </span>
+        </p>
+      ) : null}
+      <p className="relative mt-3 text-[13px] font-semibold text-[rgb(var(--kx-living-ink))]">{metaLine}</p>
       {typeof passScore === "number" ? (
-        <p className="relative mt-1 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+        <p className="relative mt-1 text-[11px] font-medium text-[rgb(var(--kx-living-muted))]">
           {t(`合格线 ${passScore}`, `合格ライン ${passScore}`, `Pass mark ${passScore}`)}
         </p>
       ) : null}
@@ -300,23 +438,23 @@ export function JlptSectionBar({
 }) {
   const pct = Math.round(accuracy * 100);
   return (
-    <div className="rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 shadow-[0_16px_38px_-38px_rgb(var(--kx-shadow)/0.7)]">
-      <div className="flex items-center justify-between text-xs font-bold">
-        <span className="flex items-center gap-2 text-[rgb(var(--kx-living-ink))]">
+    <div className="rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5">
+      <div className="flex items-center justify-between text-xs">
+        <span className="flex items-center gap-2 font-semibold text-[rgb(var(--kx-living-ink))]">
           {label}
           {weak ? (
-            <span className="rounded-md bg-red-500/[0.12] px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-red-600 dark:text-red-400">
+            <span className="rounded-md bg-red-500/[0.1] px-1.5 py-0.5 text-[10px] font-bold text-red-600 dark:text-red-400">
               {weakLabel || "Weak"}
             </span>
           ) : null}
         </span>
-        <span className="tabular-nums text-[rgb(var(--kx-living-muted))]">
+        <span className="font-medium tabular-nums text-[rgb(var(--kx-living-muted))]">
           {correct}/{total} · {pct}%
         </span>
       </div>
-      <div className="mt-2.5 h-2 w-full overflow-hidden rounded-full bg-[rgb(var(--kx-living-ink))]/[0.07]">
+      <div className="mt-2.5 h-2 w-full overflow-hidden rounded-full bg-[rgb(var(--kx-living-ink))]/[0.06]">
         <div
-          className={["h-full rounded-full transition-all", weak ? "bg-red-500/85" : "bg-[rgb(var(--kx-living-accent))]"].join(" ")}
+          className={["h-full rounded-full transition-all", weak ? "bg-red-500/80" : "bg-[rgb(var(--kx-living-accent))]"].join(" ")}
           style={{ width: `${Math.max(4, pct)}%` }}
         />
       </div>
@@ -334,7 +472,7 @@ export function JlptProgress({ value, total, label }: { value: number; total: nu
         <div className="h-full rounded-full bg-[rgb(var(--kx-living-accent))] transition-all" style={{ width: `${pct}%` }} />
       </div>
       {label ? (
-        <p className="mt-2 text-[11px] font-bold tabular-nums text-[rgb(var(--kx-living-muted))]">{label}</p>
+        <p className="mt-2 text-[11px] font-semibold tabular-nums text-[rgb(var(--kx-living-muted))]">{label}</p>
       ) : null}
     </div>
   );
@@ -358,12 +496,12 @@ export function JlptHero({
   streak?: GuideJlptStreak;
 }) {
   return (
-    <header className="relative overflow-hidden rounded-[28px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-5 pb-5 pt-5 shadow-[0_30px_64px_-46px_rgb(var(--kx-shadow)/0.7)] sm:px-7 sm:pb-6 sm:pt-6">
-      {/* teal glow + warm ember, kept faint so text stays crisp */}
+    <header className={[JLPT_CARD, "relative overflow-hidden rounded-[28px] px-5 pb-6 pt-6 sm:px-8 sm:pb-7 sm:pt-7"].join(" ")}>
+      {/* one faint accent glow, kept quiet so the text stays crisp */}
       <div
         aria-hidden
-        className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full opacity-70 blur-2xl"
-        style={{ background: "radial-gradient(closest-side, rgb(var(--kx-living-accent)/0.16), transparent)" }}
+        className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full opacity-60 blur-3xl"
+        style={{ background: "radial-gradient(closest-side, rgb(var(--kx-living-accent)/0.13), transparent)" }}
       />
       {/* oversized kana watermark */}
       <span
@@ -374,23 +512,23 @@ export function JlptHero({
       </span>
 
       <div className="relative flex items-start justify-between gap-3">
-        <p className="text-[11px] font-black uppercase tracking-[0.2em] text-[rgb(var(--kx-living-accent))]">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[rgb(var(--kx-living-accent))]">
           Machi Guide · JLPT
         </p>
         {streak ? <StreakBadge t={t} streak={streak} /> : null}
       </div>
 
-      <h1 className="relative mt-2.5 max-w-[22ch] text-[26px] font-black leading-[1.15] tracking-[-0.02em] text-[rgb(var(--kx-living-ink))] sm:text-[32px]">
+      <h1 className="relative mt-3 max-w-[22ch] text-[26px] font-black leading-[1.12] tracking-[-0.02em] text-[rgb(var(--kx-living-ink))] sm:text-[32px]">
         {title}
       </h1>
       {subtitle ? (
-        <p className="relative mt-2 max-w-[46ch] text-[13px] font-medium leading-relaxed text-[rgb(var(--kx-living-muted))] sm:text-sm">
+        <p className="relative mt-2.5 max-w-[46ch] text-[13px] leading-relaxed text-[rgb(var(--kx-living-muted))] sm:text-sm">
           {subtitle}
         </p>
       ) : null}
 
       {streak?.last7days?.length ? (
-        <div className="relative mt-4">
+        <div className="relative mt-5">
           <StreakDots t={t} streak={streak} />
         </div>
       ) : null}
@@ -420,29 +558,29 @@ export function JlptActionGrid({ t, actions }: { t: Tri; actions: JlptAction[] }
               className={[
                 "grid h-11 w-11 shrink-0 place-items-center rounded-2xl transition",
                 a.primary
-                  ? "bg-[rgb(var(--kx-living-accent))] text-white shadow-[0_10px_22px_-12px_rgb(var(--kx-living-accent)/0.9)]"
-                  : "bg-[rgb(var(--kx-living-accent))]/[0.1] text-[rgb(var(--kx-living-accent))]",
+                  ? "bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))] shadow-[0_10px_22px_-12px_rgb(var(--kx-living-accent)/0.8)]"
+                  : "bg-[rgb(var(--kx-living-accent))]/[0.09] text-[rgb(var(--kx-living-accent))]",
               ].join(" ")}
             >
               <Icon className="h-5 w-5" />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-[15px] font-black leading-tight text-[rgb(var(--kx-living-ink))]">{a.title}</p>
-              <p className="mt-1 text-xs font-medium leading-snug text-[rgb(var(--kx-living-muted))]">{a.subtitle}</p>
+              <p className="text-[15px] font-bold leading-tight text-[rgb(var(--kx-living-ink))]">{a.title}</p>
+              <p className="mt-1 text-xs leading-snug text-[rgb(var(--kx-living-muted))]">{a.subtitle}</p>
             </div>
-            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] transition group-hover:translate-x-0.5 group-hover:bg-[rgb(var(--kx-living-accent))]/[0.14] group-hover:text-[rgb(var(--kx-living-accent))]">
+            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] transition group-hover:translate-x-0.5 group-hover:bg-[rgb(var(--kx-living-accent))]/[0.12] group-hover:text-[rgb(var(--kx-living-accent))]">
               <ChevronRight className="h-3.5 w-3.5" />
             </span>
           </>
         );
         const base =
-          "group flex items-start gap-3.5 rounded-[22px] border p-4 transition duration-200 sm:p-[18px]";
+          "group flex items-start gap-3.5 rounded-[24px] border p-4 transition duration-200 sm:p-5";
         if (!a.enabled) {
           return (
             <div
               key={a.href}
               title={t("内容即将上线", "近日公開", "Coming soon")}
-              className={[base, "cursor-not-allowed border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] opacity-55"].join(" ")}
+              className={[base, "cursor-not-allowed border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] opacity-55"].join(" ")}
             >
               {inner}
             </div>
@@ -454,10 +592,10 @@ export function JlptActionGrid({ t, actions }: { t: Tri; actions: JlptAction[] }
             href={a.href}
             className={[
               base,
-              "shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)] hover:-translate-y-0.5 hover:shadow-[0_26px_52px_-34px_rgb(var(--kx-shadow)/0.7)]",
+              "shadow-[0_24px_48px_-42px_rgb(var(--kx-shadow)/0.55)] hover:-translate-y-0.5 hover:shadow-[0_28px_56px_-38px_rgb(var(--kx-shadow)/0.6)] motion-reduce:hover:translate-y-0",
               a.primary
-                ? "border-[rgb(var(--kx-living-accent))]/35 bg-[rgb(var(--kx-living-accent))]/[0.06] hover:border-[rgb(var(--kx-living-accent))]/55"
-                : "border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] hover:border-[rgb(var(--kx-living-accent))]/35",
+                ? "border-[rgb(var(--kx-living-accent))]/30 bg-[rgb(var(--kx-living-accent))]/[0.05] hover:border-[rgb(var(--kx-living-accent))]/50"
+                : "border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] hover:border-[rgb(var(--kx-living-accent))]/30",
             ].join(" ")}
           >
             {inner}
@@ -489,11 +627,11 @@ export function JlptLevelLadder({ t, levels }: { t: Tri; levels: JlptLevelItem[]
         const diff = levelDifficulty(lv.label);
         // deepen the badge tint by difficulty (0.10 → 0.24 accent), ink text
         const tint = 0.1 + (diff - 1) * 0.035;
-        return (
-          <div
-            key={lv.key}
-            className="flex items-center gap-3.5 rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5 shadow-[0_16px_38px_-38px_rgb(var(--kx-shadow)/0.7)]"
-          >
+        // W2-3 static intro pages exist for n1–n5; link the whole row there so
+        // the ladder doubles as the "了解 N3" entry (no extra pill row needed).
+        const introHref = /^n[1-5]$/i.test(lv.label) ? `/guide/jlpt/levels/${lv.label.toLowerCase()}` : null;
+        const inner = (
+          <>
             <span
               className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-[15px] font-black text-[rgb(var(--kx-living-accent))]"
               style={{ background: `rgb(var(--kx-living-accent) / ${tint})` }}
@@ -502,7 +640,7 @@ export function JlptLevelLadder({ t, levels }: { t: Tri; levels: JlptLevelItem[]
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <p className="text-[13px] font-black text-[rgb(var(--kx-living-ink))]">{nameOf(lv.label)}</p>
+                <p className="text-[13px] font-bold text-[rgb(var(--kx-living-ink))]">{nameOf(lv.label)}</p>
                 <span className="flex items-center gap-[3px]" aria-hidden>
                   {Array.from({ length: 5 }).map((_, i) => (
                     <span
@@ -515,9 +653,33 @@ export function JlptLevelLadder({ t, levels }: { t: Tri; levels: JlptLevelItem[]
                   ))}
                 </span>
               </div>
-              <p className="mt-0.5 truncate text-xs font-medium text-[rgb(var(--kx-living-muted))]">{lv.summary}</p>
+              <p className="mt-0.5 truncate text-xs text-[rgb(var(--kx-living-muted))]">{lv.summary}</p>
             </div>
-          </div>
+            {introHref ? (
+              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] transition group-hover:translate-x-0.5 group-hover:bg-[rgb(var(--kx-living-accent))]/[0.12] group-hover:text-[rgb(var(--kx-living-accent))]">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </span>
+            ) : null}
+          </>
+        );
+        const rowCls =
+          "flex items-center gap-3.5 rounded-[20px] border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5";
+        if (!introHref) {
+          return (
+            <div key={lv.key} className={rowCls}>
+              {inner}
+            </div>
+          );
+        }
+        return (
+          <Link
+            key={lv.key}
+            href={introHref}
+            aria-label={t(`${lv.label} 等级介绍`, `${lv.label} とは`, `About ${lv.label}`)}
+            className={[rowCls, "group transition hover:border-[rgb(var(--kx-living-accent))]/30"].join(" ")}
+          >
+            {inner}
+          </Link>
         );
       })}
     </div>
@@ -535,7 +697,7 @@ export function StreakBadge({ t, streak }: { t: Tri; streak?: GuideJlptStreak })
   return (
     <div
       className={[
-        "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-black ring-1 transition",
+        "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ring-1 transition",
         active
           ? "bg-[rgb(var(--kx-living-warm))]/[0.14] text-[rgb(var(--kx-living-warm))] ring-[rgb(var(--kx-living-warm))]/25"
           : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] ring-transparent",
@@ -555,7 +717,7 @@ export function StreakDots({ t, streak }: { t: Tri; streak?: GuideJlptStreak }) 
   const days = streak.last7days.slice(-7);
   return (
     <div className="flex items-end gap-2.5">
-      <span className="pb-1 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+      <span className="pb-1 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
         {t("近 7 天", "直近7日", "Last 7 days")}
       </span>
       <div className="flex items-center gap-1.5">
@@ -565,9 +727,9 @@ export function StreakDots({ t, streak }: { t: Tri; streak?: GuideJlptStreak }) 
             <div key={d.date} className="flex flex-col items-center gap-1" title={d.date}>
               <span
                 className={[
-                  "grid h-7 w-7 place-items-center rounded-[10px] text-[10px] font-black transition",
+                  "grid h-7 w-7 place-items-center rounded-[10px] text-[10px] font-bold transition",
                   d.done
-                    ? "bg-[rgb(var(--kx-living-accent))] text-white shadow-[0_6px_14px_-8px_rgb(var(--kx-living-accent)/0.9)]"
+                    ? "bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))] shadow-[0_6px_14px_-8px_rgb(var(--kx-living-accent)/0.8)]"
                     : "bg-[rgb(var(--kx-living-ink))]/[0.06] text-[rgb(var(--kx-living-muted))]",
                   isToday && !d.done ? "ring-2 ring-[rgb(var(--kx-living-accent))]/40" : "",
                 ].join(" ")}
@@ -578,14 +740,16 @@ export function StreakDots({ t, streak }: { t: Tri; streak?: GuideJlptStreak }) 
           );
         })}
       </div>
-      <span className="ml-auto pb-1 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+      <span className="ml-auto pb-1 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
         {t(`最长 ${streak.longestStreak} 天`, `最長 ${streak.longestStreak} 日`, `Best ${streak.longestStreak}`)}
       </span>
     </div>
   );
 }
 
-/** Countdown bar to the next public exam date — a focused motivator row. */
+/** Countdown bar to the next public exam date — a focused motivator row.
+ *  Pass `href={null}` to render a static banner (e.g. on the exam-dates page
+ *  itself, where a self-link would be noise). */
 export function ExamCountdownBar({
   t,
   countdown,
@@ -593,33 +757,43 @@ export function ExamCountdownBar({
 }: {
   t: Tri;
   countdown?: GuideJlptExamCountdown | null;
-  href?: string;
+  href?: string | null;
 }) {
   if (!countdown?.examDate) return null;
-  return (
-    <Link
-      href={href}
-      className="group flex items-center justify-between gap-3 rounded-2xl border border-[rgb(var(--kx-living-accent))]/20 bg-[rgb(var(--kx-living-accent))]/[0.06] px-4 py-3.5 transition hover:border-[rgb(var(--kx-living-accent))]/35 hover:bg-[rgb(var(--kx-living-accent))]/[0.1]"
-    >
+  const inner = (
+    <>
       <div className="flex min-w-0 items-center gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[rgb(var(--kx-living-accent))]/[0.14] text-[rgb(var(--kx-living-accent))]">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[rgb(var(--kx-living-accent))]/[0.12] text-[rgb(var(--kx-living-accent))]">
           <Timer className="h-5 w-5" />
         </span>
         <div className="min-w-0">
-          <p className="text-sm font-black text-[rgb(var(--kx-living-ink))]">
+          <p className="text-sm font-bold text-[rgb(var(--kx-living-ink))]">
             {t("距下次 JLPT", "次回 JLPT まで", "Next JLPT")} · {countdown.sessionLabel}
           </p>
-          <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">{countdown.examDate}</p>
+          <p className="mt-0.5 text-[11px] font-medium text-[rgb(var(--kx-living-muted))]">{countdown.examDate}</p>
         </div>
       </div>
       <div className="flex shrink-0 items-baseline gap-1">
-        <span className="text-[26px] font-black leading-none text-[rgb(var(--kx-living-accent))]">
+        <span className="text-[26px] font-black leading-none tabular-nums text-[rgb(var(--kx-living-accent))]">
           {Math.max(0, countdown.daysRemaining)}
         </span>
-        <span className="text-[11px] font-bold uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
           {t("天", "日", "days")}
         </span>
       </div>
+    </>
+  );
+  const base =
+    "flex items-center justify-between gap-3 rounded-[20px] border border-[rgb(var(--kx-living-accent))]/20 bg-[rgb(var(--kx-living-accent))]/[0.05] px-4 py-3.5";
+  if (!href) {
+    return <div className={base}>{inner}</div>;
+  }
+  return (
+    <Link
+      href={href}
+      className={[base, "group transition hover:border-[rgb(var(--kx-living-accent))]/35 hover:bg-[rgb(var(--kx-living-accent))]/[0.08]"].join(" ")}
+    >
+      {inner}
     </Link>
   );
 }
@@ -645,11 +819,12 @@ export function LevelPicker({
         <button
           key={lv || "all"}
           type="button"
+          aria-pressed={value === lv}
           onClick={() => onChange(lv)}
           className={[
-            "rounded-full px-3.5 py-1.5 text-xs font-black transition",
+            "rounded-full px-4 py-2 text-xs font-bold transition",
             value === lv
-              ? "bg-[rgb(var(--kx-living-accent))] text-white shadow-[0_10px_20px_-12px_rgb(var(--kx-living-accent)/0.9)]"
+              ? "bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))] shadow-[0_10px_20px_-12px_rgb(var(--kx-living-accent)/0.8)]"
               : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] hover:bg-[rgb(var(--kx-living-ink))]/[0.09]",
           ].join(" ")}
         >
@@ -679,9 +854,10 @@ export function SectionPicker({
         <button
           key={o.key || "all"}
           type="button"
+          aria-pressed={value === o.key}
           onClick={() => onChange(o.key)}
           className={[
-            "rounded-full px-3 py-1.5 text-xs font-bold transition",
+            "rounded-full px-3.5 py-2 text-xs font-semibold transition",
             value === o.key
               ? "bg-[rgb(var(--kx-living-ink))] text-[rgb(var(--kx-living-surface))]"
               : "bg-[rgb(var(--kx-living-ink))]/[0.05] text-[rgb(var(--kx-living-muted))] hover:bg-[rgb(var(--kx-living-ink))]/[0.09]",
@@ -832,7 +1008,7 @@ export function JlptAudioPlayer({
         onError={failPlaybackStart}
         onAbort={() => setPlaybackStart((current) => failListeningPlaybackStart(current))}
       />
-      <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
+      <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
         <Headphones className="h-3.5 w-3.5" />
         {t("听力音频", "リスニング音声", "Listening audio")}
       </div>
@@ -852,7 +1028,7 @@ export function JlptAudioPlayer({
             onClick={toggle}
             disabled={playBlocked}
             aria-label={playBlocked ? t("本题音频已播放", "この音声は再生済みです", "Audio already played") : playing ? t("暂停", "一時停止", "Pause") : t("播放", "再生", "Play")}
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-white shadow-[0_10px_22px_-12px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 active:scale-95"
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))] shadow-[0_10px_22px_-12px_rgb(var(--kx-living-accent)/0.8)] transition hover:opacity-90 active:scale-95 disabled:opacity-45"
           >
             {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 translate-x-[1px]" />}
           </button>
@@ -942,9 +1118,9 @@ export function QuestionCard({
   const scriptVisible = !hasAudio || graded || (policy.showTranscriptDuringAttempt && showScript);
 
   return (
-    <div className="rounded-[24px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_22px_50px_-44px_rgb(var(--kx-shadow)/0.7)] sm:p-6">
-      <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
-        <span className="rounded-md bg-[rgb(var(--kx-living-accent))]/[0.12] px-2 py-0.5 text-[rgb(var(--kx-living-accent))]">
+    <div className={[JLPT_CARD, "p-5 sm:p-6"].join(" ")}>
+      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
+        <span className="rounded-md bg-[rgb(var(--kx-living-accent))]/[0.1] px-2 py-0.5 font-bold text-[rgb(var(--kx-living-accent))]">
           {question.level}
         </span>
         <span>{
@@ -1016,13 +1192,13 @@ export function QuestionCard({
             >
               <span
                 className={[
-                  "grid h-7 w-7 shrink-0 place-items-center rounded-lg text-xs font-black transition",
+                  "grid h-7 w-7 shrink-0 place-items-center rounded-lg text-xs font-bold transition",
                   isCorrect
                     ? "bg-emerald-500 text-white"
                     : isWrongPick
                       ? "bg-red-500 text-white"
                       : isSelected
-                        ? "bg-[rgb(var(--kx-living-accent))] text-white"
+                        ? "bg-[rgb(var(--kx-living-accent))] text-[rgb(var(--kx-on-accent))]"
                         : "bg-[rgb(var(--kx-living-ink))]/[0.07] text-[rgb(var(--kx-living-muted))]",
                 ].join(" ")}
               >
@@ -1035,11 +1211,11 @@ export function QuestionCard({
       </div>
 
       {correctIdx !== undefined && question.explanation ? (
-        <div className="mt-4 rounded-2xl border border-[rgb(var(--kx-living-accent))]/20 bg-[rgb(var(--kx-living-accent))]/[0.06] px-4 py-3.5">
-          <p className="text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
+        <div className="mt-4 rounded-2xl border border-[rgb(var(--kx-living-accent))]/20 bg-[rgb(var(--kx-living-accent))]/[0.05] px-4 py-3.5">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
             {t("解析", "解説", "Explanation")}
           </p>
-          <p className="mt-1.5 whitespace-pre-wrap text-[13px] font-medium leading-relaxed text-[rgb(var(--kx-living-ink))]">
+          <p className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-[rgb(var(--kx-living-ink))]">
             {question.explanation}
           </p>
         </div>
@@ -1094,11 +1270,11 @@ export function ExplainButton({
 
   if (text) {
     return (
-      <div className="mt-3 rounded-2xl border border-violet-500/25 bg-violet-500/[0.06] px-4 py-3.5">
-        <p className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-violet-600 dark:text-violet-400">
+      <div className="mt-3 rounded-2xl border border-[rgb(var(--kx-living-accent))]/25 bg-[rgb(var(--kx-living-accent))]/[0.05] px-4 py-3.5">
+        <p className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
           <Sparkles className="h-3.5 w-3.5" /> Machi AI
         </p>
-        <p className="mt-1.5 whitespace-pre-wrap text-[13px] font-medium leading-relaxed text-[rgb(var(--kx-living-ink))]">
+        <p className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-[rgb(var(--kx-living-ink))]">
           {text}
         </p>
       </div>
@@ -1111,7 +1287,7 @@ export function ExplainButton({
         type="button"
         onClick={run}
         disabled={loading}
-        className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/[0.08] px-3.5 py-1.5 text-xs font-black text-violet-600 transition hover:bg-violet-500/[0.14] disabled:opacity-60 dark:text-violet-400"
+        className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-accent))]/30 bg-[rgb(var(--kx-living-accent))]/[0.07] px-3.5 py-2 text-xs font-bold text-[rgb(var(--kx-living-accent))] transition hover:bg-[rgb(var(--kx-living-accent))]/[0.12] disabled:opacity-60"
       >
         {loading ? <Loader className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
         {t("AI 讲解这道题", "AI に解説してもらう", "Explain with AI")}

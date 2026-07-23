@@ -23,6 +23,7 @@ import {
   Bus,
   CheckCircle2,
   ChefHat,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -859,6 +860,11 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
     return true;
   });
   const activeFilterCount = Object.values(filters).filter((value) => String(value || "").trim()).length;
+  // 客户端展示态：二手频道 reserved（预定中）置灰沉底——稳定分区，仅影响展示顺序，
+  // 不改请求与服务端排序契约。
+  const displayItems = kind === "marketplace"
+    ? [...visibleItems.filter((item) => item.status !== "reserved"), ...visibleItems.filter((item) => item.status === "reserved")]
+    : visibleItems;
   // 空态回退契约:该地区没有结果时服务端回退到都市圈/全国(data.filters.fallback +
   // fallback_label),在结果上方用一行说明当前展示的范围。
   const fallbackFilters = listings.data?.pages?.[0]?.data?.filters;
@@ -1047,7 +1053,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
                 <SlidersHorizontal className="h-4 w-4" />
                 筛选
                 {activeFilterCount ? (
-                  <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] px-1 text-[11px] leading-none text-white">
+                  <span className="grid h-5 min-w-5 place-items-center rounded-full bg-kx-accent px-1 text-[11px] leading-none text-kx-onAccent">
                     {activeFilterCount}
                   </span>
                 ) : null}
@@ -1150,6 +1156,15 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
             ) : null}
           </section>
 
+          {/* 已选筛选回显：每条带单独 ✕，与面板共用同一份 filters 状态 */}
+          <ActiveFilterChips
+            type={lodgingActive ? "local_service" : spec.type}
+            context={lodgingActive ? "lodging" : "default"}
+            filters={filters}
+            onChange={setFilters}
+            scopeCountry={scopeCountry}
+          />
+
           {kind === "services" && !nationwide ? <VerifiedMerchantsStrip citySlug={city.slug} locale={locale} /> : null}
 
           {fallbackFilters?.fallback && fallbackFilters.fallback_label && visibleItems.length ? (
@@ -1174,21 +1189,21 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
             </section>
           ) : visibleItems.length ? (
             kind === "marketplace" ? (
-              // 二手市场：双列起步的高密度图片瀑布，价格压在图上
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-                {visibleItems.map((listing) => <SecondhandListingCard key={listing.id} listing={listing} />)}
+              // 二手市场：等高卡网格，价格为王；reserved 已在 displayItems 里沉底
+              <div className="grid grid-cols-2 items-stretch gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                {displayItems.map((listing) => <SecondhandListingCard key={listing.id} listing={listing} />)}
               </div>
             ) : kind === "rentals" ? (
               // 照片主导网格：长租与民宿共用同一套视觉语言
-              <div className="grid grid-cols-1 gap-x-4 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {visibleItems.map((listing) => (
+              <div className="grid grid-cols-1 items-stretch gap-x-4 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {displayItems.map((listing) => (
                   <StayListingCard key={listing.id} listing={listing} locale={locale} variant={forSaleActive ? "forsale" : lodgingActive ? "stay" : "home"} />
                 ))}
               </div>
             ) : kind === "jobs" ? (
               // 职位行卡：薪资高亮 + 标签 + 快速申请
               <div className="kx-job-list">
-                {visibleItems.map((listing, index) => (
+                {displayItems.map((listing, index) => (
                   <Fragment key={listing.id}>
                     <JobRowCard listing={listing} locale={locale} />
                     {index === 1 ? <JobGuideInsert locale={locale} /> : null}
@@ -1197,16 +1212,26 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
               </div>
             ) : kind === "services" ? (
               // 服务卡片：评分 + 类目 + 价位 + 预约 CTA
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
-                {visibleItems.map((listing) => <ServiceCard key={listing.id} listing={listing} locale={locale} />)}
+              <div className="grid grid-cols-1 items-stretch gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+                {displayItems.map((listing) => <ServiceCard key={listing.id} listing={listing} locale={locale} />)}
               </div>
             ) : (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))] gap-4">
-                {visibleItems.map((listing) => <MarketplaceCard key={listing.id} listing={listing} />)}
+                {displayItems.map((listing) => <MarketplaceCard key={listing.id} listing={listing} />)}
               </div>
             )
           ) : (
-            <ListingEmptyState type={lodgingActive ? "local_service" : forSaleActive ? "for_sale" : spec.type} cityName={scopeLabel} stays={lodgingActive} />
+            <ListingNoResults
+              type={lodgingActive ? "local_service" : forSaleActive ? "for_sale" : spec.type}
+              cityName={scopeLabel}
+              stays={lodgingActive}
+              filters={filters}
+              context={lodgingActive ? "lodging" : "default"}
+              scopeCountry={scopeCountry}
+              suggestions={parseListingRelaxation(listings.data?.pages?.[0])}
+              onRemoveKey={(key) => setFilters({ ...filters, [key]: "" })}
+              onClearFilters={() => setFilters({})}
+            />
           )}
           {listings.hasNextPage ? (
             <div ref={loadMoreRef} className="mt-6 flex justify-center">
@@ -1299,7 +1324,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
             <h1 className="truncate text-lg font-black text-[rgb(var(--kx-living-ink))]">{displayTitle}</h1>
           </div>
           <button type="button" onClick={() => favorite.mutate()} className="kx-listing-icon-button ml-auto">
-            <Heart className={`h-4 w-4 ${item.favorited ? "fill-rose-500 text-rose-500" : "text-kx-text"}`} />
+            <Heart className={`h-4 w-4 ${item.favorited ? "fill-kx-like text-kx-like" : "text-kx-text"}`} />
           </button>
         </div>
       </header>
@@ -1361,7 +1386,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
         {isOwner ? (
           <Link
             href={`/listings/create?type=${item.type}&edit=${item.id}`}
-            className="kx-living-detail-primary flex h-12 w-full items-center justify-center rounded-full text-sm font-black text-white transition active:scale-[0.99]"
+            className="kx-living-detail-primary flex h-12 w-full items-center justify-center rounded-full text-sm font-black text-kx-onAccent transition active:scale-[0.99]"
           >
             {pickText(locale, "编辑信息", "情報を編集", "Edit listing")}
           </Link>
@@ -1369,7 +1394,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
           <button
             type="button"
             onClick={openIntake}
-            className="kx-living-detail-primary h-12 w-full rounded-full text-sm font-black text-white transition active:scale-[0.99]"
+            className="kx-living-detail-primary h-12 w-full rounded-full text-sm font-black text-kx-onAccent transition active:scale-[0.99]"
           >
             {contactActionLabel(item, locale)}
           </button>
@@ -1846,7 +1871,7 @@ export function CreateListingPage({
               <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-kx-subtle">选择发布类型</p>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
               {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((value) => (
-                <button key={value} type="button" disabled={isEditing} onClick={() => applyType(value)} data-active={type === value} className="h-12 rounded-2xl border border-kx-stroke/60 bg-kx-card text-sm font-black text-kx-muted transition hover:-translate-y-px hover:border-kx-accent/40 hover:text-kx-accent disabled:cursor-not-allowed disabled:opacity-45 data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white data-[active=true]:opacity-100">
+                <button key={value} type="button" disabled={isEditing} onClick={() => applyType(value)} data-active={type === value} className="h-12 rounded-2xl border border-kx-stroke/60 bg-kx-card text-sm font-black text-kx-muted transition hover:-translate-y-px hover:border-kx-accent/40 hover:text-kx-accent disabled:cursor-not-allowed disabled:opacity-45 data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-kx-onAccent data-[active=true]:opacity-100">
                   {listingTypeLabel(value)}
                 </button>
               ))}
@@ -1854,9 +1879,9 @@ export function CreateListingPage({
             </section>
 
             {membershipRequired && !isEditing ? (
-              <section className="flex flex-col gap-3 rounded-kx-sheet border border-blue-100 bg-blue-50/70 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <section className="flex flex-col gap-3 rounded-kx-sheet border border-kx-accent/20 bg-kx-accentSoft/50 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-card text-blue-600 shadow-sm">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-card text-kx-accent shadow-sm">
                     <AlertTriangle className="h-5 w-5" />
                   </span>
                   <div>
@@ -1865,11 +1890,11 @@ export function CreateListingPage({
                   </div>
                 </div>
                 {membershipBlocked ? (
-                  <Link href="/membership" className="h-10 shrink-0 rounded-full bg-blue-600 px-4 text-center text-sm font-black leading-10 text-white shadow-[0_10px_24px_-16px_rgba(37,99,235,0.8)]">
+                  <Link href="/membership" className="h-10 shrink-0 rounded-full bg-kx-accent px-4 text-center text-sm font-black leading-10 text-kx-onAccent">
                     {pickText(locale, "开通会员", "会員登録", "Get membership")}
                   </Link>
                 ) : quotaGroup && quotaGroup.remaining !== null ? (
-                  <span className="h-10 shrink-0 rounded-full bg-kx-card px-4 text-center text-sm font-black leading-10 text-blue-700">
+                  <span className="h-10 shrink-0 rounded-full bg-kx-card px-4 text-center text-sm font-black leading-10 text-kx-accent">
                     {pickText(
                       locale,
                       `本月还可发布 ${quotaGroup.remaining} 条`,
@@ -1878,7 +1903,7 @@ export function CreateListingPage({
                     )}
                   </span>
                 ) : (
-                  <span className="h-10 shrink-0 rounded-full bg-kx-card px-4 text-center text-sm font-black leading-10 text-blue-700">{pickText(locale, "会员可发布", "会員は掲載可能", "Members can post")}</span>
+                  <span className="h-10 shrink-0 rounded-full bg-kx-card px-4 text-center text-sm font-black leading-10 text-kx-accent">{pickText(locale, "会员可发布", "会員は掲載可能", "Members can post")}</span>
                 )}
               </section>
             ) : null}
@@ -1889,7 +1914,7 @@ export function CreateListingPage({
                 <Field label="发布地区" required>
                   <div className="rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2.5">
                     <div className="flex items-center gap-2">
-                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-blue-50 text-lg">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-kx-soft text-lg">
                         {selectedRegion?.country_emoji || "🌐"}
                       </span>
                       <div className="min-w-0 flex-1">
@@ -1955,8 +1980,8 @@ export function CreateListingPage({
                             data-active={activeCategoryGroup?.key === group.key}
                             className="group min-w-[132px] shrink-0 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2 text-left transition hover:border-kx-stroke data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent"
                           >
-                            <span className="block text-sm font-black text-kx-text group-data-[active=true]:text-white">{createGroupLabel(group, locale)}</span>
-                            <span className="mt-0.5 block truncate text-[11px] font-bold text-kx-subtle group-data-[active=true]:text-white/65">{createGroupDescription(group, locale)}</span>
+                            <span className="block text-sm font-black text-kx-text group-data-[active=true]:text-kx-onAccent">{createGroupLabel(group, locale)}</span>
+                            <span className="mt-0.5 block truncate text-[11px] font-bold text-kx-subtle group-data-[active=true]:text-kx-onAccent/65">{createGroupDescription(group, locale)}</span>
                           </button>
                         ))}
                       </div>
@@ -1970,7 +1995,7 @@ export function CreateListingPage({
                         type="button"
                         onClick={() => applyCategory(chip)}
                         data-active={category === chip}
-                        className="h-8 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-muted transition data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white hover:border-kx-accent/40 hover:text-kx-accent"
+                        className="h-8 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-muted transition data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-kx-onAccent hover:border-kx-accent/40 hover:text-kx-accent"
                       >
                         {categoryLabel(chip, locale)}
                       </button>
@@ -2009,7 +2034,7 @@ export function CreateListingPage({
                     fileInputRef.current?.click();
                   }}
                   disabled={upload.isPending || media.length >= mediaLimit}
-                  className="h-10 rounded-full bg-kx-accent px-4 text-xs font-black text-white disabled:opacity-50"
+                  className="h-10 rounded-full bg-kx-accent px-4 text-xs font-black text-kx-onAccent disabled:opacity-50"
                 >
                   {upload.isPending ? "上传中..." : "添加媒体"}
                 </button>
@@ -2079,7 +2104,7 @@ export function CreateListingPage({
                               <button
                                 type="button"
                                 onClick={() => upload.mutate([item.file as File])}
-                                className="rounded-full bg-kx-card px-2 py-0.5 font-black text-blue-600 ring-1 ring-blue-100 hover:bg-kx-accentSoft"
+                                className="rounded-full bg-kx-card px-2 py-0.5 font-black text-kx-accent ring-1 ring-kx-accent/25 hover:bg-kx-accentSoft"
                               >
                                 重试
                               </button>
@@ -2095,7 +2120,7 @@ export function CreateListingPage({
                         ) : null}
                       </div>
                       <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-kx-soft">
-                        <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
+                        <div className="h-full rounded-full bg-kx-accent transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
                       </div>
                       {item.error ? <p className="mt-1 text-kx-danger">{item.error}，请重新选择文件重试。</p> : null}
                     </div>
@@ -2141,7 +2166,7 @@ export function CreateListingPage({
                     }
                     create.mutate();
                   }}
-                  className="h-11 rounded-full bg-kx-accent px-6 text-sm font-black text-white disabled:opacity-50"
+                  className="h-11 rounded-full bg-kx-accent px-6 text-sm font-black text-kx-onAccent disabled:opacity-50"
                 >
                   {create.isPending ? "提交中..." : createLabel}
                 </button>
@@ -2227,7 +2252,7 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
         <WorkbenchBackHeader title={saved ? "我的收藏" : "我的发布"} />
         <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
           {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((item) => (
-            <button key={item} onClick={() => { setType(item); setStatusGroup("all"); }} data-active={type === item} className="h-9 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold data-[active=true]:bg-kx-accent data-[active=true]:text-white">
+            <button key={item} onClick={() => { setType(item); setStatusGroup("all"); }} data-active={type === item} className="h-9 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold data-[active=true]:bg-kx-accent data-[active=true]:text-kx-onAccent">
               {listingTypeLabel(item)}
             </button>
           ))}
@@ -2240,7 +2265,7 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
                 : (query.data || []).filter((item) => group.statuses.includes(item.status)).length;
               if (group.key !== "all" && !count) return null;
               return (
-                <button key={group.key} onClick={() => setStatusGroup(group.key)} data-active={statusGroup === group.key} className="h-8 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-muted data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700">
+                <button key={group.key} onClick={() => setStatusGroup(group.key)} data-active={statusGroup === group.key} className="h-8 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-muted data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accentSoft data-[active=true]:text-kx-accent">
                   {group.label} {count}
                 </button>
               );
@@ -2419,7 +2444,7 @@ export function AdminListingsPage({
           <select value={verificationStatus} onChange={(e) => setVerificationStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部核验</option><option value="unverified">未认证</option><option value="pending">待核验</option><option value="verified">已认证</option><option value="needs_review">需复核</option><option value="rejected">核验拒绝</option></select>
           <form onSubmit={(e) => { e.preventDefault(); setQ(qInput.trim()); }} className="flex items-center gap-2">
             <input value={qInput} onChange={(e) => setQInput(e.target.value)} placeholder="搜索标题 / 描述 / 地点" className="kx-input h-10 w-56" />
-            <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-xs font-black text-white">搜索</button>
+            <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-xs font-black text-kx-onAccent">搜索</button>
             {q ? <button type="button" onClick={() => { setQ(""); setQInput(""); }} className="h-10 rounded-full bg-kx-surface px-3 text-xs font-black text-kx-muted">清除</button> : null}
           </form>
         </div>
@@ -2431,18 +2456,18 @@ export function AdminListingsPage({
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full bg-kx-surface px-2 py-1 text-xs font-black text-kx-muted">{listingTypeLabel(item.type)}</span>
-                  <StatusBadge item={item} />
+                  <StatusBadge item={item} verbose />
                   <span className="text-xs font-bold text-kx-subtle">{cityLabel(item.city_slug)} · 举报 {item.report_count || 0}</span>
                 </div>
                 <h2 className="mt-2 text-base font-black text-kx-text">{item.title}</h2>
                 <p className="mt-1 line-clamp-2 text-sm text-kx-muted">{item.description}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <button onClick={() => update.mutate({ id: item.id, patch: { status: "published", verification_status: "verified" } })} className="h-9 rounded-full bg-emerald-600 px-3 text-xs font-black text-white">通过</button>
-                <button onClick={() => update.mutate({ id: item.id, patch: { status: "rejected", verification_status: "rejected" } })} className="h-9 rounded-full bg-rose-600 px-3 text-xs font-black text-white">拒绝</button>
-                <button onClick={() => update.mutate({ id: item.id, patch: { status: "hidden", verification_status: "needs_review" } })} className="h-9 rounded-full bg-kx-accent px-3 text-xs font-black text-white">下架</button>
-                <button onClick={() => update.mutate({ id: item.id, patch: { is_promoted: true, promotion_weight: 30, promotion_type: item.type === "rental" ? "recommended_rental" : item.type === "job" || item.type === "hiring" ? "urgent_hiring" : "featured" } })} className="h-9 rounded-full bg-blue-600 px-3 text-xs font-black text-white">精选</button>
-                <button onClick={() => { if (window.confirm("确定删除这条信息？删除后会立即从 App 中消失（可在数据库恢复）。")) remove.mutate(item.id); }} disabled={remove.isPending} className="h-9 rounded-full bg-rose-700 px-3 text-xs font-black text-white disabled:opacity-50">删除</button>
+                <button onClick={() => update.mutate({ id: item.id, patch: { status: "published", verification_status: "verified" } })} className="h-9 rounded-full bg-kx-accent px-3 text-xs font-black text-kx-onAccent">通过</button>
+                <button onClick={() => update.mutate({ id: item.id, patch: { status: "rejected", verification_status: "rejected" } })} className="h-9 rounded-full bg-kx-danger px-3 text-xs font-black text-white">拒绝</button>
+                <button onClick={() => update.mutate({ id: item.id, patch: { status: "hidden", verification_status: "needs_review" } })} className="h-9 rounded-full bg-kx-accent px-3 text-xs font-black text-kx-onAccent">下架</button>
+                <button onClick={() => update.mutate({ id: item.id, patch: { is_promoted: true, promotion_weight: 30, promotion_type: item.type === "rental" ? "recommended_rental" : item.type === "job" || item.type === "hiring" ? "urgent_hiring" : "featured" } })} className="h-9 rounded-full border border-kx-accent/40 bg-kx-accentSoft px-3 text-xs font-black text-kx-accent">精选</button>
+                <button onClick={() => { if (window.confirm("确定删除这条信息？删除后会立即从 App 中消失（可在数据库恢复）。")) remove.mutate(item.id); }} disabled={remove.isPending} className="h-9 rounded-full bg-kx-danger px-3 text-xs font-black text-white disabled:opacity-50">删除</button>
               </div>
             </div>
           ))}
@@ -2532,11 +2557,11 @@ export function AdminListingReviewsPage() {
               <RatingStars value={review.rating} showValue={false} />
               <span className="text-xs font-black text-kx-muted">{review.author?.display_name || review.author?.handle || review.user_id}</span>
               <span className="text-xs font-bold text-kx-subtle">{(review.created_at || "").slice(0, 16).replace("T", " ")}</span>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${review.status === "published" ? "bg-emerald-50 text-emerald-700" : review.status === "hidden" ? "bg-amber-50 text-amber-700" : "bg-kx-surface text-kx-muted"}`}>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${review.status === "published" ? "bg-kx-accentSoft text-kx-accent" : review.status === "hidden" ? "bg-kx-heat/10 text-kx-heat" : "bg-kx-surface text-kx-muted"}`}>
                 {review.status === "published" ? "已发布" : review.status === "hidden" ? "已隐藏" : "已删除"}
               </span>
               {review.listing_title ? (
-                <Link href={`/listings/${encodeURIComponent(review.listing_id)}`} className="truncate text-xs font-black text-blue-600 hover:text-kx-accent">
+                <Link href={`/listings/${encodeURIComponent(review.listing_id)}`} className="truncate text-xs font-black text-kx-accent hover:underline">
                   {review.listing_title}
                 </Link>
               ) : null}
@@ -2545,17 +2570,17 @@ export function AdminListingReviewsPage() {
             {review.owner_reply ? <p className="mt-1.5 rounded-xl bg-kx-surface p-2.5 text-xs leading-5 text-kx-muted">商家回复：{review.owner_reply}</p> : null}
             <div className="mt-2.5 flex gap-1.5">
               {review.status !== "hidden" ? (
-                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "hidden" })} className="h-8 rounded-full border border-amber-200 bg-amber-50 px-3 text-[11px] font-black text-amber-700 disabled:opacity-50">
+                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "hidden" })} className="h-8 rounded-full border border-kx-heat/30 bg-kx-heat/10 px-3 text-[11px] font-black text-kx-heat disabled:opacity-50">
                   隐藏
                 </button>
               ) : null}
               {review.status !== "published" ? (
-                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "published" })} className="h-8 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 disabled:opacity-50">
+                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "published" })} className="h-8 rounded-full border border-kx-accent/30 bg-kx-accentSoft px-3 text-[11px] font-black text-kx-accent disabled:opacity-50">
                   恢复
                 </button>
               ) : null}
               {review.status !== "deleted" ? (
-                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "deleted" })} className="h-8 rounded-full border border-rose-200 bg-rose-50 px-3 text-[11px] font-black text-rose-600 disabled:opacity-50">
+                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "deleted" })} className="h-8 rounded-full border border-kx-danger/30 bg-kx-danger/10 px-3 text-[11px] font-black text-kx-danger disabled:opacity-50">
                   删除
                 </button>
               ) : null}
@@ -2651,7 +2676,7 @@ function AdminBusinessCard({
         <div className="flex flex-wrap items-center gap-2">
           <AdminBusinessStatusBadge status={business.verification_status} />
           <span className="rounded-full bg-kx-surface px-2.5 py-1 text-[11px] font-black text-kx-muted">{business.business_type || "商家服务"}</span>
-          <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{business.document_count || business.documents?.length || 0} 份材料</span>
+          <span className="rounded-full bg-kx-accentSoft px-2.5 py-1 text-[11px] font-black text-kx-accent">{business.document_count || business.documents?.length || 0} 份材料</span>
         </div>
         <h2 className="mt-2 truncate text-lg font-black text-kx-text">{business.business_name || "未命名商家"}</h2>
         <p className="mt-1 line-clamp-2 text-sm font-semibold leading-6 text-kx-muted">{business.description || "暂无服务介绍"}</p>
@@ -2666,7 +2691,7 @@ function AdminBusinessCard({
           <AdminBusinessField label="分类" value={categories} />
         </div>
         {business.application_note ? (
-          <div className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-900">
+          <div className="mt-3 rounded-2xl bg-kx-heat/10 px-3 py-2 text-xs font-semibold leading-5 text-kx-heat">
             申请备注：{business.application_note}
           </div>
         ) : null}
@@ -2674,7 +2699,7 @@ function AdminBusinessCard({
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {business.documents.slice(0, 4).map((doc) => (
               <div key={doc.documentId || doc.id} className="flex items-center gap-2 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2">
-                <FileCheck2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                <FileCheck2 className="h-4 w-4 shrink-0 text-kx-accent" />
                 <div className="min-w-0">
                   <p className="truncate text-xs font-black text-kx-text">{doc.documentType || "认证材料"}</p>
                   <p className="text-[11px] font-semibold text-kx-subtle">{doc.contentType || doc.fileType || "文件"} · {doc.status || doc.documentStatus || "submitted"}</p>
@@ -2717,10 +2742,10 @@ function AdminBusinessCard({
 
 function AdminBusinessStatusBadge({ status }: { status: string }) {
   const tone: Record<string, string> = {
-    verified: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-    pending: "bg-amber-50 text-amber-700 ring-amber-200",
-    needs_review: "bg-blue-50 text-blue-700 ring-blue-200",
-    rejected: "bg-rose-50 text-rose-700 ring-rose-200",
+    verified: "bg-kx-accentSoft text-kx-accent ring-kx-accent/30",
+    pending: "bg-kx-heat/10 text-kx-heat ring-kx-heat/30",
+    needs_review: "bg-kx-verified/10 text-kx-verified ring-kx-verified/30",
+    rejected: "bg-kx-danger/10 text-kx-danger ring-kx-danger/30",
     suspended: "bg-kx-surface text-kx-text ring-kx-stroke/60",
     draft: "bg-kx-surface text-kx-muted ring-kx-stroke/60",
   };
@@ -2751,7 +2776,7 @@ function AdminBusinessMetric({
 }) {
   return (
     <div className="rounded-2xl bg-kx-card p-2 text-center ring-1 ring-kx-stroke/50">
-      <Icon className="mx-auto h-4 w-4 text-blue-600" />
+      <Icon className="mx-auto h-4 w-4 text-kx-accent" />
       <p className="mt-1 text-[11px] font-black text-kx-subtle">{label}</p>
       <p className="text-sm font-black text-kx-text">{value}</p>
     </div>
@@ -2770,10 +2795,10 @@ function AdminBusinessAction({
   onClick: () => void;
 }) {
   const tones: Record<typeof tone, string> = {
-    approve: "bg-emerald-600 text-white hover:bg-kx-accent/90",
-    review: "bg-blue-600 text-white hover:bg-kx-accent/90",
-    reject: "bg-rose-600 text-white hover:bg-rose-700",
-    pause: "bg-kx-accent text-white hover:bg-kx-accent/90",
+    approve: "bg-kx-accent text-kx-onAccent hover:brightness-95",
+    review: "bg-kx-verified text-white hover:brightness-95",
+    reject: "bg-kx-danger text-white hover:brightness-95",
+    pause: "bg-kx-accent text-kx-onAccent hover:bg-kx-accent/90",
   };
   return (
     <button
@@ -2821,7 +2846,7 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
         ) : coverArtwork ? (
           <Image src={coverArtwork} alt={title} fill sizes="(max-width: 768px) 100vw, 320px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.025]" unoptimized />
         ) : (
-          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-kx-subtle">
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-kx-soft text-kx-subtle">
             <span className="grid h-12 w-12 place-items-center rounded-2xl bg-kx-card/82 text-kx-accent shadow-sm ring-1 ring-kx-stroke/50">
               <PlaceholderIcon className="h-5 w-5" />
             </span>
@@ -2879,63 +2904,63 @@ const SERVICE_SECTIONS: { key: string; zh: string; ja: string; en: string; categ
 ];
 
 const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }> = {
-  "中华料理": { Icon: UtensilsCrossed, tone: "bg-rose-500/10 text-rose-600" },
-  "日本料理": { Icon: ChefHat, tone: "bg-orange-500/10 text-orange-600" },
-  "居酒屋": { Icon: Beer, tone: "bg-amber-500/10 text-amber-700" },
-  "烧肉火锅": { Icon: Flame, tone: "bg-red-500/10 text-red-600" },
-  "拉面": { Icon: Soup, tone: "bg-yellow-500/10 text-yellow-700" },
-  "寿司海鲜": { Icon: Fish, tone: "bg-sky-500/10 text-sky-600" },
-  "咖啡甜品": { Icon: Coffee, tone: "bg-amber-500/10 text-amber-800" },
-  "西餐": { Icon: Pizza, tone: "bg-lime-500/10 text-lime-700" },
-  "韩国料理": { Icon: CookingPot, tone: "bg-rose-500/10 text-rose-700" },
-  "餐饮点评": { Icon: Utensils, tone: "bg-rose-500/10 text-rose-600" },
-  "优惠预约": { Icon: Tag, tone: "bg-orange-500/10 text-orange-600" },
-  "酒店民宿": { Icon: Bed, tone: "bg-cyan-500/10 text-cyan-700" },
-  "民宿": { Icon: BedDouble, tone: "bg-cyan-500/10 text-cyan-700" },
-  "酒店": { Icon: Hotel, tone: "bg-blue-500/10 text-blue-700" },
-  "温泉旅馆": { Icon: Waves, tone: "bg-teal-500/10 text-teal-700" },
-  "公寓式酒店": { Icon: Building2, tone: "bg-indigo-500/10 text-indigo-600" },
-  "短住公寓": { Icon: Building2, tone: "bg-indigo-500/10 text-indigo-600" },
-  "景点门票": { Icon: Ticket, tone: "bg-violet-500/10 text-violet-600" },
-  "一日游": { Icon: Landmark, tone: "bg-emerald-500/10 text-emerald-700" },
-  "本地向导": { Icon: Landmark, tone: "bg-emerald-500/10 text-emerald-700" },
-  "体验活动": { Icon: Sparkles, tone: "bg-violet-500/10 text-violet-600" },
-  "包车行程": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
-  "接送机": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
-  "机场接送": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
-  "车站接送": { Icon: Train, tone: "bg-blue-500/10 text-blue-600" },
-  "包车": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
-  "行李协助": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
-  "材料翻译": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
-  "市役所陪同": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
-  "银行卡协助": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
-  "手机卡协助": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
-  "签证材料整理": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
-  "翻译手续": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
-  "签证/手续协助": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
-  "翻译": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
-  "搬家清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
-  "搬家": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
-  "清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
-  "退房清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
-  "粗大垃圾协助": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
-  "行李搬运": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
-  "家具家电配送协助": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
-  "手机卡开通": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
-  "网络开通": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
-  "水电煤协助": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
-  "地址登记协助": { Icon: Home, tone: "bg-emerald-500/10 text-emerald-700" },
-  "粗大垃圾预约": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
-  "生活跑腿": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
-  "美容美发": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
-  "美甲": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
-  "按摩": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
-  "皮肤管理": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
-  "体检/牙科预约协助": { Icon: FileCheck2, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
-  "宠物服务": { Icon: Heart, tone: "bg-rose-500/10 text-rose-600" },
-  "生活支持": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
-  "租房申请协助": { Icon: Home, tone: "bg-orange-500/10 text-orange-600" },
-  "认证服务": { Icon: BadgeCheck, tone: "bg-emerald-500/10 text-emerald-700" },
+  "中华料理": { Icon: UtensilsCrossed, tone: "bg-kx-heat/10 text-kx-heat" },
+  "日本料理": { Icon: ChefHat, tone: "bg-kx-heat/10 text-kx-heat" },
+  "居酒屋": { Icon: Beer, tone: "bg-kx-heat/10 text-kx-heat" },
+  "烧肉火锅": { Icon: Flame, tone: "bg-kx-heat/10 text-kx-heat" },
+  "拉面": { Icon: Soup, tone: "bg-kx-heat/10 text-kx-heat" },
+  "寿司海鲜": { Icon: Fish, tone: "bg-kx-heat/10 text-kx-heat" },
+  "咖啡甜品": { Icon: Coffee, tone: "bg-kx-heat/10 text-kx-heat" },
+  "西餐": { Icon: Pizza, tone: "bg-kx-heat/10 text-kx-heat" },
+  "韩国料理": { Icon: CookingPot, tone: "bg-kx-heat/10 text-kx-heat" },
+  "餐饮点评": { Icon: Utensils, tone: "bg-kx-heat/10 text-kx-heat" },
+  "优惠预约": { Icon: Tag, tone: "bg-kx-heat/10 text-kx-heat" },
+  "酒店民宿": { Icon: Bed, tone: "bg-kx-accentSoft text-kx-accent" },
+  "民宿": { Icon: BedDouble, tone: "bg-kx-accentSoft text-kx-accent" },
+  "酒店": { Icon: Hotel, tone: "bg-kx-accentSoft text-kx-accent" },
+  "温泉旅馆": { Icon: Waves, tone: "bg-kx-accentSoft text-kx-accent" },
+  "公寓式酒店": { Icon: Building2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "短住公寓": { Icon: Building2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "景点门票": { Icon: Ticket, tone: "bg-kx-accentSoft text-kx-accent" },
+  "一日游": { Icon: Landmark, tone: "bg-kx-accentSoft text-kx-accent" },
+  "本地向导": { Icon: Landmark, tone: "bg-kx-accentSoft text-kx-accent" },
+  "体验活动": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "包车行程": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "接送机": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "机场接送": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "车站接送": { Icon: Train, tone: "bg-kx-accentSoft text-kx-accent" },
+  "包车": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "行李协助": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "材料翻译": { Icon: Languages, tone: "bg-kx-accentSoft text-kx-accent" },
+  "市役所陪同": { Icon: FileCheck2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "银行卡协助": { Icon: FileCheck2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "手机卡协助": { Icon: FileCheck2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "签证材料整理": { Icon: FileCheck2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "翻译手续": { Icon: Languages, tone: "bg-kx-accentSoft text-kx-accent" },
+  "签证/手续协助": { Icon: FileCheck2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "翻译": { Icon: Languages, tone: "bg-kx-accentSoft text-kx-accent" },
+  "搬家清洁": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "搬家": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "清洁": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "退房清洁": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "粗大垃圾协助": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "行李搬运": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "家具家电配送协助": { Icon: Bus, tone: "bg-kx-accentSoft text-kx-accent" },
+  "手机卡开通": { Icon: Store, tone: "bg-kx-accentSoft text-kx-accent" },
+  "网络开通": { Icon: Store, tone: "bg-kx-accentSoft text-kx-accent" },
+  "水电煤协助": { Icon: Store, tone: "bg-kx-accentSoft text-kx-accent" },
+  "地址登记协助": { Icon: Home, tone: "bg-kx-accentSoft text-kx-accent" },
+  "粗大垃圾预约": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "生活跑腿": { Icon: Store, tone: "bg-kx-accentSoft text-kx-accent" },
+  "美容美发": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "美甲": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "按摩": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "皮肤管理": { Icon: Sparkles, tone: "bg-kx-accentSoft text-kx-accent" },
+  "体检/牙科预约协助": { Icon: FileCheck2, tone: "bg-kx-accentSoft text-kx-accent" },
+  "宠物服务": { Icon: Heart, tone: "bg-kx-accentSoft text-kx-accent" },
+  "生活支持": { Icon: Store, tone: "bg-kx-accentSoft text-kx-accent" },
+  "租房申请协助": { Icon: Home, tone: "bg-kx-accentSoft text-kx-accent" },
+  "认证服务": { Icon: BadgeCheck, tone: "bg-kx-accentSoft text-kx-accent" },
 };
 
 export function RatingStars({ value, count, size = "sm", showValue = true }: { value: number; count?: number; size?: "sm" | "md"; showValue?: boolean }) {
@@ -2947,11 +2972,11 @@ export function RatingStars({ value, count, size = "sm", showValue = true }: { v
         {[1, 2, 3, 4, 5].map((star) => (
           <Star
             key={star}
-            className={`${dim} ${star <= Math.round(stars) ? "fill-amber-400 text-amber-400" : "fill-kx-stroke/50 text-kx-subtle"}`}
+            className={`${dim} ${star <= Math.round(stars) ? "fill-kx-heat text-kx-heat" : "fill-kx-stroke/50 text-kx-subtle"}`}
           />
         ))}
       </span>
-      {showValue && stars > 0 ? <span className={`font-black text-amber-600 ${size === "md" ? "text-base" : "text-xs"}`}>{stars.toFixed(1)}</span> : null}
+      {showValue && stars > 0 ? <span className={`font-black text-kx-heat ${size === "md" ? "text-base" : "text-xs"}`}>{stars.toFixed(1)}</span> : null}
       {typeof count === "number" && count > 0 ? <span className="text-xs font-bold text-kx-subtle">({count})</span> : null}
     </span>
   );
@@ -3106,18 +3131,21 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
   const pickup = listingAttrFlag(listing, "pickup_available") || deliveryMethod === "pickup" || deliveryMethod === "pickup_or_shipping";
   const shipping = listingAttrFlag(listing, "shipping_available") || deliveryMethod === "shipping" || deliveryMethod === "pickup_or_shipping";
   const free = listing.price === 0;
-  const badges = [listingMode, priceNegotiable ? "可议价" : "", pickup ? "可自取" : "", shipping ? "可邮寄" : "", condition]
+  // 客户端展示态：reserved 置灰（沉底在频道页排序里处理），sold 系列保留遮罩。
+  const reserved = listing.status === "reserved";
+  // iOS 层级观：condition chip 优先，最多 2 枚，其余信息让位给价格。
+  const badges = [condition, listingMode, priceNegotiable ? "可议价" : "", pickup ? "可自取" : "", shipping ? "可邮寄" : ""]
     .filter((item): item is string => Boolean(item))
-    .slice(0, 3);
+    .slice(0, 2);
   return (
-    <Link href={detailHref(listing)} className="kx-secondhand-card group">
-      <div className="relative aspect-square overflow-hidden bg-kx-surface dark:bg-kx-soft">
+    <Link href={detailHref(listing)} className={`kx-secondhand-card group flex h-full flex-col ${reserved ? "opacity-75" : ""}`}>
+      <div className="relative aspect-square shrink-0 overflow-hidden bg-kx-surface dark:bg-kx-soft">
         {useVideoFallbackArtwork ? (
           <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
         ) : coverArtwork ? (
-          <Image src={coverArtwork} alt={title} fill sizes="(max-width: 640px) 50vw, 240px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
+          <Image src={coverArtwork} alt={title} fill sizes="(max-width: 640px) 50vw, 240px" className={`relative z-[1] object-cover transition duration-300 group-hover:scale-[1.03] ${reserved ? "saturate-[0.55]" : ""}`} unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[rgb(var(--kx-living-soft))] text-kx-accent/60">
+          <span className="absolute inset-0 grid place-items-center bg-kx-soft text-kx-accent/60">
             <Tag className="h-7 w-7" />
           </span>
         )}
@@ -3128,34 +3156,34 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
             </span>
           </span>
         ) : null}
-        {/* 价格角标 */}
-        <span className={`absolute bottom-2 left-2 z-[2] rounded-lg px-2 py-1 text-sm font-black text-white shadow-lg ${free ? "bg-kx-accent/95" : "bg-black/70"}`}>
-          {free ? pickText(locale, "免费送", "無料譲渡", "Free giveaway") : priceLabel(listing, locale)}
-        </span>
         {sold ? (
           <span className="absolute inset-0 z-[3] grid place-items-center bg-black/55">
             <span className="rounded-full bg-kx-card px-4 py-1.5 text-sm font-black text-kx-text">{listingStatusText(listing)}</span>
           </span>
         ) : null}
-        {condition && !sold ? (
-          <span className="absolute left-2 top-2 z-[2] rounded-full bg-kx-card/92 px-2 py-0.5 text-[10px] font-black text-kx-text shadow-sm">{condition}</span>
+        {reserved && !sold ? (
+          <span className="absolute left-2 top-2 z-[2] rounded-full border border-kx-heat/35 bg-kx-card/94 px-2 py-0.5 text-[10px] font-bold text-kx-heat shadow-sm backdrop-blur-sm">{listingStatusText(listing)}</span>
         ) : null}
-        <ListingHeartButton listing={listing} />
+        {!sold ? <ListingHeartButton listing={listing} /> : null}
       </div>
-      <div className="space-y-1 p-2.5">
-        <h2 className="line-clamp-2 text-[13px] font-bold leading-[18px] text-[rgb(var(--kx-living-ink))]">{title}</h2>
+      <div className="flex flex-1 flex-col gap-1 p-3">
+        {/* 价格为王：整卡唯一的 font-black，对齐 iOS .title 级 */}
+        <p className={`text-[19px] font-black leading-6 tracking-[-0.01em] ${reserved ? "text-kx-muted" : "text-kx-accent"}`}>
+          {free ? pickText(locale, "免费送", "無料譲渡", "Free") : priceLabel(listing, locale)}
+        </p>
+        <h2 className="line-clamp-2 text-[14px] font-semibold leading-5 text-kx-text">{title}</h2>
         {badges.length ? (
           <div className="flex flex-wrap gap-1">
-            {badges.map((badge) => (
-              <span key={badge} className="rounded-full bg-kx-accentSoft px-1.5 py-0.5 text-[10px] font-black text-kx-accent">{badge}</span>
+            {badges.map((badge, index) => (
+              <span key={badge} className={`rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${index === 0 && badge === condition ? "bg-kx-accentSoft text-kx-accent" : "bg-kx-soft text-kx-muted"}`}>{badge}</span>
             ))}
           </div>
         ) : null}
-        <p className="flex items-center gap-1 truncate text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+        <p className="mt-auto flex items-center gap-1 truncate pt-0.5 text-kx-meta font-normal text-kx-muted">
           <MapPin className="h-3 w-3 shrink-0" />
           <span className="truncate">{location}</span>
           {typeof listing.favorite_count === "number" && listing.favorite_count > 0 ? (
-            <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 text-rose-400"><Heart className="h-3 w-3 fill-current" />{listing.favorite_count}</span>
+            <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 text-kx-like"><Heart className="h-3 w-3 fill-current" />{listing.favorite_count}</span>
           ) : null}
         </p>
       </div>
@@ -3202,7 +3230,7 @@ function ListingHeartButton({ listing }: { listing: KXCityListing }) {
       }}
       className="absolute right-2.5 top-2.5 z-10 grid h-9 w-9 place-items-center rounded-full bg-kx-card/92 text-kx-text shadow-kx-card backdrop-blur transition hover:scale-105 active:scale-95"
     >
-      <Heart className={`h-4.5 w-4.5 transition ${favorited ? "fill-rose-500 text-rose-500" : "text-kx-text"}`} />
+      <Heart className={`h-4.5 w-4.5 transition ${favorited ? "fill-kx-like text-kx-like" : "text-kx-text"}`} />
     </button>
   );
 }
@@ -3268,12 +3296,12 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
   const machiBadgesRaw = (listing as { machiBadges?: string[]; machi_badges?: string[] }).machiBadges ?? (listing as { machi_badges?: string[] }).machi_badges;
   const machiBadges: string[] = Array.isArray(machiBadgesRaw) ? machiBadgesRaw.filter(Boolean).slice(0, 3) : [];
   return (
-    <Link href={detailHref(listing)} className="group block">
-      <div className="kx-stay-image relative aspect-[4/3] overflow-hidden bg-kx-surface">
+    <Link href={detailHref(listing)} className="group flex h-full flex-col">
+      <div className="kx-stay-image relative aspect-[4/3] shrink-0 overflow-hidden bg-kx-surface">
         {coverPreview ? (
           <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 300px" className="object-cover transition duration-300 group-hover:scale-[1.04]" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[rgb(var(--kx-living-soft))] text-[rgb(var(--kx-living-accent))]/55">
+          <span className="absolute inset-0 grid place-items-center bg-kx-soft text-kx-accent/55">
             {variant === "stay" ? <BedDouble className="h-8 w-8" /> : variant === "forsale" ? <Building2 className="h-8 w-8" /> : <Home className="h-8 w-8" />}
           </span>
         )}
@@ -3284,48 +3312,50 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
         ) : null}
         <div className="absolute left-2.5 top-2.5 flex flex-col items-start gap-1">
           {machiReco ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-amber-500 px-2.5 py-1 text-[11px] font-black text-white shadow-sm ring-1 ring-amber-300/60">
+            <span className="inline-flex items-center gap-1 rounded-full bg-kx-card/94 px-2.5 py-1 text-[11px] font-bold text-kx-heat shadow-sm ring-1 ring-kx-heat/30 backdrop-blur-sm">
               <Sparkles className="h-3.5 w-3.5" />
               {pickText(locale, "Machi推荐", "Machiおすすめ", "Machi Pick")}
             </span>
           ) : null}
           {listing.verification_status === "verified" ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-kx-card/94 px-2.5 py-1 text-[11px] font-black text-kx-text shadow-sm ring-1 ring-kx-shadow/10 backdrop-blur-sm dark:bg-kx-surface/90 dark:text-kx-text dark:ring-white/15">
-              <BadgeCheck className="h-3.5 w-3.5 text-emerald-600" />
+              <BadgeCheck className="h-3.5 w-3.5 text-kx-accent" />
               {variant === "stay" ? pickText(locale, "认证房东", "認証ホスト", "Verified host") : variant === "forsale" ? pickText(locale, "认证房源", "認証物件", "Verified listing") : pickText(locale, "已核验", "確認済み", "Verified")}
             </span>
           ) : null}
         </div>
         <ListingHeartButton listing={listing} />
       </div>
-      <div className="mt-2.5 px-0.5">
-        <div className="flex items-start justify-between gap-2">
-          <h2 className="line-clamp-1 text-[15px] font-black text-[rgb(var(--kx-living-ink))]">{title}</h2>
+      <div className="flex flex-1 flex-col px-0.5 pt-2.5">
+        {/* 价格为王：唯一的 font-black，对齐 iOS .title 级 */}
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="min-w-0 truncate text-[17px] font-black leading-6 tracking-[-0.01em] text-kx-text">
+            {priceLabel(listing, locale)}
+            {variant === "home" && managementFee ? (
+              <span className="ml-1.5 text-kx-meta font-normal text-kx-muted">{pickText(locale, `管理费 ${managementFee}`, `管理費 ${managementFee}`, `+ mgmt ${managementFee}`)}</span>
+            ) : null}
+          </p>
           {ratingCount > 0 ? (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[13px] font-black text-[rgb(var(--kx-living-ink))]">
-              <Star className="h-3.5 w-3.5 fill-current" />
+            <span className="inline-flex shrink-0 items-center gap-1 text-[13px] font-semibold text-kx-text">
+              <Star className="h-3.5 w-3.5 fill-kx-heat text-kx-heat" />
               {ratingAvg.toFixed(1)}
-              <span className="font-bold text-[rgb(var(--kx-living-muted))]">({ratingCount})</span>
+              <span className="font-normal text-kx-muted">({ratingCount})</span>
             </span>
           ) : variant === "stay" ? (
-            <span className="mt-0.5 shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-black text-rose-600 dark:bg-rose-500/15">{pickText(locale, "新上线", "新着", "New")}</span>
+            <span className="shrink-0 rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-semibold text-kx-accent">{pickText(locale, "新上线", "新着", "New")}</span>
           ) : null}
         </div>
-        <p className="mt-0.5 line-clamp-1 text-[13px] font-semibold text-[rgb(var(--kx-living-muted))]">
+        <h2 className="mt-0.5 line-clamp-1 text-[15px] font-semibold text-kx-text">{title}</h2>
+        {/* 户型 meta 行（户型 · 面积 · 入住/築年）+ 位置 meta 行 */}
+        {subline ? <p className="mt-0.5 line-clamp-1 text-kx-meta font-normal text-kx-muted">{subline}</p> : null}
+        <p className="mt-0.5 line-clamp-1 text-kx-meta font-normal text-kx-muted">
           <Train className="mr-1 inline h-3.5 w-3.5 align-[-2px] opacity-70" />
           {station || location}
         </p>
-        {subline ? <p className="mt-0.5 line-clamp-1 text-[13px] font-semibold text-[rgb(var(--kx-living-muted))]">{subline}</p> : null}
-        <p className="mt-1.5 text-[15px] font-black text-[rgb(var(--kx-living-ink))]">
-          {priceLabel(listing, locale)}
-          {variant === "home" && managementFee ? (
-            <span className="ml-1.5 text-xs font-bold text-[rgb(var(--kx-living-muted))]">{pickText(locale, `管理费 ${managementFee}`, `管理費 ${managementFee}`, `+ mgmt ${managementFee}`)}</span>
-          ) : null}
-        </p>
         {(machiBadges.length || tags.length) ? (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {machiBadges.map((b) => <span key={`mb-${b}`} className="inline-flex items-center gap-0.5 rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-black text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300"><Sparkles className="h-2.5 w-2.5" />{b}</span>)}
-            {tags.map((tag) => <span key={tag} className="rounded-md bg-[rgb(var(--kx-living-soft))] px-2 py-0.5 text-[11px] font-black text-[rgb(var(--kx-living-muted))]">{tag}</span>)}
+            {machiBadges.map((b) => <span key={`mb-${b}`} className="inline-flex items-center gap-0.5 rounded-md bg-kx-heat/10 px-2 py-0.5 text-[11px] font-semibold text-kx-heat ring-1 ring-kx-heat/25"><Sparkles className="h-2.5 w-2.5" />{b}</span>)}
+            {tags.map((tag) => <span key={tag} className="rounded-md bg-kx-soft px-2 py-0.5 text-[11px] font-semibold text-kx-muted">{tag}</span>)}
           </div>
         ) : null}
       </div>
@@ -3362,20 +3392,20 @@ function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Local
       <div className="min-w-0 flex-1">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="line-clamp-1 text-[17px] font-black text-[rgb(var(--kx-living-ink))] transition group-hover:text-[rgb(var(--kx-living-accent))]">
+          <h2 className="line-clamp-1 text-[16px] font-semibold text-kx-text transition group-hover:text-kx-accent">
             {urgent ? (
-              <span className="mr-1.5 inline-flex translate-y-[-2px] items-center rounded-md bg-rose-50 px-1.5 py-0.5 align-middle text-[10px] font-black text-rose-600 ring-1 ring-rose-100">
+              <span className="mr-1.5 inline-flex translate-y-[-2px] items-center rounded-md bg-kx-danger/10 px-1.5 py-0.5 align-middle text-[10px] font-bold text-kx-danger ring-1 ring-kx-danger/20">
                 {pickText(locale, "急招", "急募", "Urgent")}
               </span>
             ) : null}
             {title}
           </h2>
-          <p className="mt-1 flex min-w-0 items-center gap-1.5 text-sm font-bold text-[rgb(var(--kx-living-muted))]">
+          <p className="mt-1 flex min-w-0 items-center gap-1.5 text-[13px] font-normal text-kx-muted">
             {company ? (
               <>
                 <span className="truncate">{company}</span>
                 {listing.verification_status === "verified" ? (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-black text-violet-600 ring-1 ring-violet-100 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-500/25">
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-kx-accentSoft px-1.5 py-0.5 text-[10px] font-bold text-kx-accent ring-1 ring-kx-accent/20">
                     <BadgeCheck className="h-3 w-3" />
                     {pickText(locale, "认证雇主", "認証企業", "Verified employer")}
                   </span>
@@ -3388,18 +3418,18 @@ function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Local
         </div>
         <StatusBadge item={listing} />
       </div>
-      <p className="mt-2.5 text-lg font-black text-[rgb(var(--kx-living-accent))]">{priceLabel(listing, locale)}</p>
+      <p className="mt-2.5 text-lg font-black tracking-[-0.01em] text-kx-accent">{priceLabel(listing, locale)}</p>
       {tags.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {tags.map((tag) => <span key={tag} className="rounded-md bg-[rgb(var(--kx-living-soft))] px-2 py-1 text-[11px] font-black text-[rgb(var(--kx-living-muted))]">{tag}</span>)}
+          {tags.map((tag) => <span key={tag} className="rounded-md bg-kx-soft px-2 py-1 text-[11px] font-medium text-kx-muted">{tag}</span>)}
         </div>
       ) : null}
-      <div className="mt-3 flex items-center justify-between border-t border-[rgb(var(--kx-stroke))]/15 pt-2.5">
-        <span className="flex items-center gap-1 text-xs font-bold text-[rgb(var(--kx-living-muted))]">
+      <div className="mt-3 flex items-center justify-between border-t border-kx-stroke/15 pt-2.5">
+        <span className="flex items-center gap-1 text-kx-meta font-normal text-kx-muted">
           <Clock className="h-3.5 w-3.5" />
           {hours || formatPublishedAt(listing, locale)}
         </span>
-        <span className="inline-flex items-center gap-1 text-xs font-black text-[rgb(var(--kx-living-accent))]">
+        <span className="inline-flex items-center gap-1 text-xs font-semibold text-kx-accent">
           {pickText(locale, "查看职位", "求人を見る", "View role")}
           <ChevronRight className="h-4 w-4" />
         </span>
@@ -3412,12 +3442,12 @@ function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Local
 function JobGuideInsert({ locale }: { locale: Locale }) {
   return (
     <Link href="/guide/career-japan" className="kx-job-guide-insert">
-      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-violet-100 text-violet-700 dark:bg-violet-500/18 dark:text-violet-300">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
         <BookOpen className="h-5 w-5" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[11px] font-black text-violet-600 dark:text-violet-300">{pickText(locale, "求职指南", "就職ガイド", "Career guide")}</span>
-        <span className="mt-0.5 block truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">
+        <span className="block text-[11px] font-bold text-kx-accent">{pickText(locale, "求职指南", "就職ガイド", "Career guide")}</span>
+        <span className="mt-0.5 block truncate text-sm font-semibold text-kx-text">
           {pickText(locale, "日本求职：第一次面试准备清单", "日本就職：初めての面接準備", "Japan job search: first interview checklist")}
         </span>
         <span className="mt-0.5 block text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "指南 · 8 分钟阅读", "ガイド · 8分", "Guide · 8 min")}</span>
@@ -3450,12 +3480,12 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
         ? pickText(locale, "在线订座", "席を予約", "Reserve a table")
         : pickText(locale, "预约", "予約する", "Book");
   return (
-    <Link href={detailHref(listing)} className="kx-service-card group">
-      <div className="relative aspect-[16/9] overflow-hidden bg-kx-surface dark:bg-kx-soft">
+    <Link href={detailHref(listing)} className="kx-service-card group flex h-full flex-col">
+      <div className="relative aspect-[16/9] shrink-0 overflow-hidden bg-kx-surface dark:bg-kx-soft">
         {coverPreview ? (
           <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, 360px" className="object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[rgb(var(--kx-living-soft))] text-orange-700/55">
+          <span className="absolute inset-0 grid place-items-center bg-[rgb(var(--kx-living-soft))] text-kx-heat/55">
             {meta ? <meta.Icon className="h-8 w-8" /> : <Store className="h-8 w-8" />}
           </span>
         )}
@@ -3471,34 +3501,34 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
           </span>
         ) : null}
         {listing.verification_status === "verified" ? (
-          <span className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-emerald-600/94 px-2 py-1 text-[10px] font-black text-white shadow-sm">
+          <span className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-kx-accent/94 px-2 py-1 text-[10px] font-bold text-kx-onAccent shadow-sm">
             <BadgeCheck className="h-3 w-3" />
             {pickText(locale, "认证商家", "認証店舗", "Verified")}
           </span>
         ) : null}
       </div>
-      <div className="p-3.5">
-        <h2 className="line-clamp-1 text-[15px] font-black text-[rgb(var(--kx-living-ink))]">{title}</h2>
+      <div className="flex flex-1 flex-col p-3.5">
+        <h2 className="line-clamp-1 text-[15px] font-semibold text-kx-text">{title}</h2>
         <div className="mt-1.5 flex items-center justify-between gap-2">
           {ratingCount > 0 ? (
             <RatingStars value={ratingAvg} count={ratingCount} />
           ) : (
-            <span className="text-xs font-bold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "暂无点评 · 期待你的体验", "口コミ募集中", "No reviews yet")}</span>
+            <span className="text-kx-meta font-normal text-kx-muted">{pickText(locale, "暂无点评 · 期待你的体验", "口コミ募集中", "No reviews yet")}</span>
           )}
-          <span className="shrink-0 text-sm font-black text-[rgb(var(--kx-living-warm))]">{priceRange || priceLabel(listing, locale)}</span>
+          <span className="shrink-0 text-sm font-black tracking-[-0.01em] text-kx-heat">{priceRange || priceLabel(listing, locale)}</span>
         </div>
-        <p className="mt-2 flex items-center gap-1 truncate text-xs font-bold text-[rgb(var(--kx-living-muted))]">
+        <p className="mt-2 flex items-center gap-1 truncate pb-3 text-kx-meta font-normal text-kx-muted">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{location}</span>
           {openHours ? (
             <span className="ml-auto inline-flex shrink-0 items-center gap-1"><Clock className="h-3 w-3" />{openHours}</span>
           ) : null}
         </p>
-        <div className="mt-3 flex items-center justify-between border-t border-[rgb(var(--kx-stroke))]/15 pt-2.5">
-          <span className="text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+        <div className="mt-auto flex items-center justify-between border-t border-kx-stroke/15 pt-2.5">
+          <span className="text-[11px] font-normal text-kx-muted">
             {listing.inquiry_count ? pickText(locale, `${listing.inquiry_count} 人咨询过`, `${listing.inquiry_count} 件の問い合わせ`, `${listing.inquiry_count} inquiries`) : pickText(locale, "在线咨询 · 免费", "オンライン相談無料", "Free to ask")}
           </span>
-          <span className="inline-flex h-8 items-center rounded-full bg-[rgb(var(--kx-living-accent))] px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(20,112,103,0.9)] transition group-hover:brightness-95">
+          <span className="inline-flex h-8 items-center rounded-full bg-kx-accent px-3.5 text-xs font-semibold text-kx-onAccent shadow-kx-card transition group-hover:brightness-95">
             {cta}
           </span>
         </div>
@@ -3535,7 +3565,7 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
     <section className="kx-living-contact-card mb-4 !rounded-kx-sheet p-3.5 sm:p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-emerald-600/10 text-emerald-700 dark:text-emerald-300">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
             <Store className="h-4.5 w-4.5" />
           </span>
           <div className="min-w-0">
@@ -3543,7 +3573,7 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
             <p className="truncate text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "资质审核通过的本地商家与服务方", "審査済みの地元店舗・事業者", "Locally vetted shops & providers")}</p>
           </div>
         </div>
-        <Link href={`/businesses?city=${encodeURIComponent(citySlug)}`} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-700 transition hover:bg-kx-accent-soft">
+        <Link href={`/businesses?city=${encodeURIComponent(citySlug)}`} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-kx-accent/25 bg-kx-accentSoft px-3 text-xs font-black text-kx-accent transition hover:bg-kx-accent-soft">
           {pickText(locale, "全部商家", "すべて見る", "View all")}
           <ChevronRight className="h-3.5 w-3.5" />
         </Link>
@@ -3557,7 +3587,7 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
               className="kx-living-mini-card w-[210px] shrink-0 rounded-2xl p-3 transition hover:-translate-y-0.5"
             >
               <div className="flex items-center gap-2.5">
-                <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-emerald-600/10 text-emerald-700 dark:text-emerald-300">
+                <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-kx-accentSoft text-kx-accent">
                   {business.logo_url ? (
                     <Image src={business.logo_url} alt={business.business_name} width={40} height={40} className="h-10 w-10 object-cover" unoptimized />
                   ) : (
@@ -3567,7 +3597,7 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
                 <div className="min-w-0">
                   <p className="flex items-center gap-1 truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">
                     <span className="truncate">{business.business_name}</span>
-                    <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                    <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-kx-accent" />
                   </p>
                   <p className="truncate text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">{business.business_type || (business.service_categories || [])[0] || ""}</p>
                 </div>
@@ -3717,7 +3747,7 @@ function StructuredListCard({ listing }: { listing: KXCityListing }) {
         ) : coverArtwork ? (
           <Image src={coverArtwork} alt={title} fill sizes="148px" className="object-cover" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-kx-subtle">
+          <span className="absolute inset-0 grid place-items-center bg-kx-soft text-kx-subtle">
             <PlaceholderIcon className="h-5 w-5" />
           </span>
         )}
@@ -3735,7 +3765,7 @@ function StructuredListCard({ listing }: { listing: KXCityListing }) {
             <p className="text-xl font-black text-kx-text">{priceLabel(listing, locale)}</p>
             <h2 className="mt-1 line-clamp-2 text-base font-black text-kx-text">{title}</h2>
           </div>
-          <StatusBadge item={listing} />
+          <StatusBadge item={listing} verbose />
         </div>
         <p className="mt-2 flex items-center gap-1 text-sm font-semibold text-kx-muted"><MapPin className="h-4 w-4" />{location}</p>
         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -3781,7 +3811,7 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
           ) : coverArtwork ? (
             <Image src={coverArtwork} alt={title} fill sizes="148px" className="object-cover" unoptimized />
           ) : (
-            <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-kx-subtle">
+            <span className="absolute inset-0 grid place-items-center bg-kx-soft text-kx-subtle">
               <PlaceholderIcon className="h-5 w-5" />
             </span>
           )}
@@ -3799,7 +3829,7 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
               <p className="text-xl font-black text-kx-text">{priceLabel(listing, locale)}</p>
               <Link href={detailHref(listing)} className="mt-1 line-clamp-2 text-base font-black text-kx-text hover:text-kx-accent">{title}</Link>
             </div>
-            <StatusBadge item={listing} />
+            <StatusBadge item={listing} verbose />
           </div>
           <p className="mt-2 text-sm font-semibold text-kx-muted">{location}</p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-kx-muted">
@@ -3812,7 +3842,7 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
             {isLive ? <button type="button" onClick={() => onStatus("hidden")} className="h-9 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-text transition hover:border-kx-stroke">{pickText(locale, "下架", "非表示", "Unlist")}</button> : null}
             {canRepublish ? <button type="button" onClick={() => onStatus("published")} className="h-9 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-text transition hover:border-kx-stroke">{pickText(locale, "重新发布", "再公開", "Republish")}</button> : null}
             {canReserve ? <button type="button" onClick={() => onStatus("reserved")} className="h-9 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-text transition hover:border-kx-stroke">{pickText(locale, "标记已预约", "予約済みにする", "Mark reserved")}</button> : null}
-            {isLive ? <button type="button" onClick={() => onStatus(doneStatus)} className="h-9 rounded-full bg-kx-accent px-3 text-xs font-black text-white transition hover:bg-kx-accent/90">{doneLabel}</button> : null}
+            {isLive ? <button type="button" onClick={() => onStatus(doneStatus)} className="h-9 rounded-full bg-kx-accent px-3 text-xs font-black text-kx-onAccent transition hover:bg-kx-accent/90">{doneLabel}</button> : null}
             <button type="button" onClick={onDelete} className="h-9 rounded-full border border-kx-danger/40 px-3 text-xs font-black text-kx-danger transition hover:bg-kx-danger/10">{pickText(locale, "删除", "削除", "Delete")}</button>
           </div>
         </div>
@@ -3839,7 +3869,7 @@ export function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
               {pickText(locale, "正式记录", "正式な記録", "Official record")}
             </span>
             <span className="rounded-full bg-kx-surface px-2.5 py-1 text-xs font-black text-kx-muted">{inquiryTypeLabel(inquiry.type, locale)}</span>
-            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">{inquiryStatusLabel(inquiry.status, locale)}</span>
+            <span className="rounded-full bg-kx-accentSoft px-2.5 py-1 text-xs font-black text-kx-accent">{inquiryStatusLabel(inquiry.status, locale)}</span>
           </div>
           {item ? (
             <Link href={detailHref(item)} className="mt-2 block text-base font-black text-kx-text hover:text-kx-accent">{title}</Link>
@@ -3855,8 +3885,8 @@ export function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
       {details.length ? (
         <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
           {details.slice(0, 8).map((d, i) => (
-            <div key={`${d.label}-${i}`} className="rounded-2xl bg-amber-50/70 px-3 py-2 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
-              <dt className="font-black text-amber-700 dark:text-amber-300">{d.label}</dt>
+            <div key={`${d.label}-${i}`} className="rounded-2xl bg-kx-heat/[0.08] px-3 py-2 ring-1 ring-kx-heat/20">
+              <dt className="font-black text-kx-heat">{d.label}</dt>
               <dd className="mt-0.5 break-words font-semibold leading-5 text-kx-text">{d.value}</dd>
             </div>
           ))}
@@ -3870,13 +3900,13 @@ export function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
           </Link>
         ) : null}
         {conversationId ? (
-          <Link href={`/messages/${encodeURIComponent(conversationId)}`} className="inline-flex h-9 items-center justify-center gap-1 rounded-full bg-kx-accent px-3 text-xs font-black text-white transition hover:bg-kx-accent/90">
+          <Link href={`/messages/${encodeURIComponent(conversationId)}`} className="inline-flex h-9 items-center justify-center gap-1 rounded-full bg-kx-accent px-3 text-xs font-black text-kx-onAccent transition hover:bg-kx-accent/90">
             <MessageSquare className="h-3.5 w-3.5" />
             {pickText(locale, "补充沟通", "追加で連絡", "Follow up")}
           </Link>
         ) : null}
       </div>
-      <p className="mt-3 text-xs font-semibold leading-5 text-amber-700 dark:text-amber-300">{pickText(locale, "请在确认身份和信息真实性后再交换联系方式；Machi 不代收交易款、押金、保证金或第三方服务款。", "身元と情報の真偽を確認してから連絡先を交換してください。Machi は代金・敷金・保証金・第三者サービス費をお預かりしません。", "Verify identity and authenticity before exchanging contacts. Machi never holds payments, deposits, guarantees or third-party fees.")}</p>
+      <p className="mt-3 text-xs font-semibold leading-5 text-kx-heat">{pickText(locale, "请在确认身份和信息真实性后再交换联系方式；Machi 不代收交易款、押金、保证金或第三方服务款。", "身元と情報の真偽を確認してから連絡先を交換してください。Machi は代金・敷金・保証金・第三者サービス費をお預かりしません。", "Verify identity and authenticity before exchanging contacts. Machi never holds payments, deposits, guarantees or third-party fees.")}</p>
     </section>
   );
 }
@@ -3887,7 +3917,7 @@ function GuideAppointmentCard({ item }: { item: Record<string, unknown> }) {
   return (
     <section className="rounded-2xl border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-card">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-orange-50 px-2 py-1 text-xs font-black text-orange-700">Machi 自营服务</span>
+        <span className="rounded-full bg-kx-heat/10 px-2 py-1 text-xs font-black text-kx-heat">Machi 自营服务</span>
         <span className="rounded-full bg-kx-surface px-2 py-1 text-xs font-black text-kx-muted">{formatAdminRecordValue("status", item.status || "pending_review")}</span>
       </div>
       <h2 className="mt-2 text-base font-black text-kx-text">{title}</h2>
@@ -3916,8 +3946,8 @@ function OrderCard({ item }: { item: Record<string, unknown> }) {
     <section className="rounded-2xl border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-card">
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-full bg-kx-surface px-2 py-1 text-xs font-black text-kx-muted">{source === "membership" ? "会员" : "Guide"}</span>
-        <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">{formatAdminRecordValue("status", status)}</span>
-        {paid ? <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">已支付</span> : null}
+        <span className="rounded-full bg-kx-accentSoft px-2 py-1 text-xs font-black text-kx-accent">{formatAdminRecordValue("status", status)}</span>
+        {paid ? <span className="rounded-full bg-kx-accentSoft px-2 py-1 text-xs font-black text-kx-accent">已支付</span> : null}
       </div>
       <h2 className="mt-2 text-base font-black text-kx-text">{title}</h2>
       <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
@@ -3963,7 +3993,7 @@ function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityL
         <p className="mt-1 text-sm font-semibold text-[rgb(var(--kx-living-muted))]">{location}</p>
         {isOwner ? (
           <>
-            <Link href={`/listings/create?type=${item.type}&edit=${item.id}`} className="kx-living-detail-primary mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full text-sm font-black text-white">
+            <Link href={`/listings/create?type=${item.type}&edit=${item.id}`} className="kx-living-detail-primary mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full text-sm font-black text-kx-onAccent">
               编辑信息
             </Link>
             <Link href="/my/listings" className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full border border-kx-stroke/60 text-sm font-black text-kx-text">
@@ -3971,7 +4001,7 @@ function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityL
             </Link>
           </>
         ) : (
-          <button type="button" onClick={onContact} className="kx-living-detail-primary mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full text-sm font-black text-white">
+          <button type="button" onClick={onContact} className="kx-living-detail-primary mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full text-sm font-black text-kx-onAccent">
             <Send className="h-4 w-4" />
             {label}
           </button>
@@ -4127,7 +4157,7 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
       <section role="dialog" aria-modal="true" aria-label={receipt.title} className="w-full max-w-lg rounded-t-3xl bg-kx-card p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
-            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-emerald-50 text-emerald-700">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
               <CheckCircle2 className="h-5 w-5" />
             </span>
             <div className="min-w-0">
@@ -4150,10 +4180,10 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
           </div>
         </div>
         {receipt.details.length ? (
-          <dl className="mt-3 max-h-56 space-y-1 overflow-y-auto rounded-2xl bg-amber-50/70 p-3 text-xs ring-1 ring-amber-100">
+          <dl className="mt-3 max-h-56 space-y-1 overflow-y-auto rounded-2xl bg-kx-heat/[0.08] p-3 text-xs ring-1 ring-kx-heat/20">
             {receipt.details.map((d, index) => (
               <div key={`${d.label}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
-                <dt className="font-black text-amber-700">{d.label}</dt>
+                <dt className="font-black text-kx-heat">{d.label}</dt>
                 <dd className="break-words font-semibold text-kx-text">{d.value}</dd>
               </div>
             ))}
@@ -4168,7 +4198,7 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
           )}
         </p>
         <div className="mt-4 grid gap-2 sm:grid-cols-3">
-          <Link href={workbenchHref} className="inline-flex h-11 items-center justify-center rounded-full bg-kx-accent px-4 text-sm font-black text-white" onClick={onClose}>
+          <Link href={workbenchHref} className="inline-flex h-11 items-center justify-center rounded-full bg-kx-accent px-4 text-sm font-black text-kx-onAccent" onClick={onClose}>
             {pickText(locale, "查看记录", "記録を見る", "View record")}
           </Link>
           {receipt.conversationId ? (
@@ -4256,10 +4286,10 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
           </label>
         </div>
         {error ? <p className="mt-3 text-sm font-bold text-kx-danger">{error}</p> : null}
-        <p className="mt-3 text-xs font-semibold text-amber-700">
+        <p className="mt-3 text-xs font-semibold text-kx-heat">
           {pickText(locale, "提交后会生成正式记录，私信只用于后续补充沟通。Machi 不代收交易款、押金、保证金或第三方服务款，请勿提前转账。", "送信後は正式な記録が作成され、メッセージは補足連絡用です。Machi は代金・保証金・第三者サービス費を預かりません。前払いは避けてください。", "Submitting creates an official record; messages are only for follow-up. Machi does not hold trade payments, deposits, guarantees, or third-party service fees. Avoid paying in advance.")}
         </p>
-        <button type="button" disabled={submitting} onClick={submit} className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-kx-accent text-sm font-black text-white disabled:opacity-60">
+        <button type="button" disabled={submitting} onClick={submit} className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-kx-accent text-sm font-black text-kx-onAccent disabled:opacity-60">
           <Send className="h-4 w-4" />
           {submitting ? pickText(locale, "提交中…", "送信中…", "Submitting…") : config.title}
         </button>
@@ -4268,6 +4298,227 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
   );
 }
 
+type ActiveListingFilterChip = { key: string; label: string };
+
+/// 把 filters 状态翻译成人类可读的 chips（城市范围 / 价格区间 / 属性）。
+/// 属性 label 从 filterOptions 反查；布尔组取「更具体」的那个词（可议价 > 价格）。
+function activeListingFilterChips(
+  type: KXListingType,
+  context: ListingFilterContext,
+  filters: Record<string, string>,
+  scopeCountry: string,
+  locale: Locale,
+): ActiveListingFilterChip[] {
+  const groups = filterOptions(type, context);
+  const chips: ActiveListingFilterChip[] = [];
+  for (const [key, rawValue] of Object.entries(filters)) {
+    const value = String(rawValue || "").trim();
+    if (!value) continue;
+    if (key === "scope_area") {
+      const label = CITY_AREA_GROUPS.find((group) => group.slug === value)?.label || value;
+      chips.push({ key, label });
+      continue;
+    }
+    if (key === "scope_city") {
+      chips.push({ key, label: getCityBySlug(value)?.name || value });
+      continue;
+    }
+    if (key === "scope_province") {
+      const label = provincesFor(scopeCountry).find((p) => p.code === value)?.name || value;
+      chips.push({ key, label });
+      continue;
+    }
+    if (key === "min_price") {
+      chips.push({ key, label: pickText(locale, `≥ ${value}`, `${value} 以上`, `≥ ${value}`) });
+      continue;
+    }
+    if (key === "max_price") {
+      chips.push({ key, label: pickText(locale, `≤ ${value}`, `${value} 以下`, `≤ ${value}`) });
+      continue;
+    }
+    const group = groups.find((g) => g.key === key);
+    if (group) {
+      const option = group.options.find((o) => o.value === value);
+      const label = option
+        ? (option.label.length >= group.label.length ? option.label : group.label)
+        : `${group.label}`;
+      chips.push({ key, label });
+      continue;
+    }
+    chips.push({ key, label: value });
+  }
+  return chips;
+}
+
+/// 已选筛选 chips 行：列表上方回显当前条件，每条带单独 ✕、可一键撤销。
+function ActiveFilterChips({
+  type,
+  context,
+  filters,
+  onChange,
+  scopeCountry,
+}: {
+  type: KXListingType;
+  context: ListingFilterContext;
+  filters: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+  scopeCountry: string;
+}) {
+  const { locale } = useI18n();
+  const chips = activeListingFilterChips(type, context, filters, scopeCountry, locale);
+  if (!chips.length) return null;
+  const removeKey = (key: string) => onChange({ ...filters, [key]: "" });
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label={pickText(locale, "已选筛选条件", "選択中の絞り込み", "Active filters")}>
+      {chips.map((chip) => (
+        <span key={chip.key} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-accent/30 bg-kx-accentSoft pl-3 pr-1.5 text-xs font-semibold text-kx-accent">
+          {chip.label}
+          <button
+            type="button"
+            aria-label={pickText(locale, `移除筛选 ${chip.label}`, `絞り込み ${chip.label} を解除`, `Remove filter ${chip.label}`)}
+            onClick={() => removeKey(chip.key)}
+            className="grid h-5 w-5 place-items-center rounded-full text-kx-accent/70 transition hover:bg-kx-accent/15 hover:text-kx-accent"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+      ))}
+      {chips.length > 1 ? (
+        <button type="button" onClick={() => onChange({})} className="h-8 rounded-full px-2.5 text-xs font-semibold text-kx-muted transition hover:text-kx-accent">
+          {pickText(locale, "清除全部", "すべてクリア", "Clear all")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+type ListingRelaxationSuggestion = { key: string; label: string; count: number | null };
+
+/// 可选契约（只读，不改请求逻辑）：空结果响应若带 "relaxation" 字段
+/// （顶层 / data / data.filters 任一位置，元素形如 { key|filter_key, label?, count|extra_count? }），
+/// 解析成「移除 X 条件 +N 条」建议；字段缺失或形状不符时返回空数组，走普通空态。
+function parseListingRelaxation(page: unknown): ListingRelaxationSuggestion[] {
+  const source = page as {
+    relaxation?: unknown;
+    data?: { relaxation?: unknown; filters?: { relaxation?: unknown } };
+  } | undefined;
+  const raw = source?.relaxation ?? source?.data?.relaxation ?? source?.data?.filters?.relaxation;
+  if (!Array.isArray(raw)) return [];
+  const suggestions: ListingRelaxationSuggestion[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const key = String(record.key ?? record.filter_key ?? record.filterKey ?? "").trim();
+    if (!key) continue;
+    const label = String(record.label ?? record.title ?? "").trim();
+    const countRaw = record.count ?? record.extra_count ?? record.extraCount ?? record.added;
+    const count = typeof countRaw === "number" && Number.isFinite(countRaw) && countRaw > 0 ? Math.floor(countRaw) : null;
+    suggestions.push({ key, label, count });
+  }
+  return suggestions;
+}
+
+/// 0 结果空态：给出行动建议而不是死胡同。
+/// - 有 relaxation 建议 → 渲染「移除 X +N 条」按钮（点击 = 去掉该筛选，复用现有查询）。
+/// - 无建议但有活跃筛选 → 「清除全部筛选」。
+/// - 都没有 → 原发布引导空态。
+function ListingNoResults({
+  type,
+  cityName,
+  stays,
+  filters,
+  context,
+  scopeCountry,
+  suggestions,
+  onRemoveKey,
+  onClearFilters,
+}: {
+  type: KXListingType;
+  cityName: string;
+  stays: boolean;
+  filters: Record<string, string>;
+  context: ListingFilterContext;
+  scopeCountry: string;
+  suggestions: ListingRelaxationSuggestion[];
+  onRemoveKey: (key: string) => void;
+  onClearFilters: () => void;
+}) {
+  const { locale } = useI18n();
+  const activeCount = Object.values(filters).filter((value) => String(value || "").trim()).length;
+  // 只保留能落到当前活跃筛选上的建议，label 缺失时从 filters 反查。
+  const actionable = suggestions
+    .filter((s) => Boolean(String(filters[s.key] || "").trim()))
+    .map((s) => ({
+      ...s,
+      label: s.label || activeListingFilterChips(type, context, { [s.key]: filters[s.key] }, scopeCountry, locale)[0]?.label || s.key,
+    }));
+  if (!actionable.length && !activeCount) {
+    return <ListingEmptyState type={type} cityName={cityName} stays={stays} />;
+  }
+  return (
+    <section className="rounded-kx-sheet border border-kx-stroke/50 bg-kx-card px-5 py-10 text-center shadow-kx-card">
+      <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-kx-accentSoft text-kx-accent">
+        <Search className="h-5 w-5" />
+      </span>
+      <h3 className="mt-3 text-base font-black text-kx-text">{pickText(locale, "没有找到匹配的结果", "条件に合う結果が見つかりません", "No matching results")}</h3>
+      <p className="mt-1 text-sm font-normal text-kx-muted">
+        {actionable.length
+          ? pickText(locale, "放宽一个条件试试，下面是能马上见效的：", "条件をひとつ緩めてみましょう。効果のあるものはこちら：", "Try relaxing one condition — these will help right away:")
+          : pickText(locale, `在${cityName}的当前筛选下暂无内容。`, `${cityName}では現在の条件に合う掲載がありません。`, `Nothing in ${cityName} under the current filters.`)}
+      </p>
+      <div className="mx-auto mt-4 flex max-w-md flex-wrap items-center justify-center gap-2">
+        {actionable.map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => onRemoveKey(s.key)}
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-kx-accent/35 bg-kx-accentSoft px-3.5 text-xs font-semibold text-kx-accent transition hover:border-kx-accent/60 hover:brightness-95"
+          >
+            <X className="h-3 w-3" />
+            {pickText(locale, `移除「${s.label}」`, `「${s.label}」を外す`, `Remove "${s.label}"`)}
+            {s.count != null ? <span className="font-black">{pickText(locale, `+${s.count} 条`, `+${s.count} 件`, `+${s.count}`)}</span> : null}
+          </button>
+        ))}
+        {activeCount ? (
+          <button
+            type="button"
+            onClick={onClearFilters}
+            className="inline-flex h-9 items-center rounded-full border border-kx-stroke/60 bg-kx-surface px-3.5 text-xs font-semibold text-kx-muted transition hover:border-kx-accent/40 hover:text-kx-accent"
+          >
+            {pickText(locale, "清除全部筛选", "絞り込みをすべてクリア", "Clear all filters")}
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/// 面板分组小标题：安静的分节层级，避免处处加粗。
+function FilterSectionTitle({ children }: { children: React.ReactNode }) {
+  return <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-kx-subtle">{children}</p>;
+}
+
+/// 面板里的墨绿 pill：单选 / 开关共用一个视觉（accent 双套 token，暗色自动切换）。
+function ListingFilterPill({ active, onClick, children, subtle = false }: { active: boolean; onClick: () => void; children: React.ReactNode; subtle?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      data-active={active}
+      className={subtle
+        ? "h-8 rounded-full px-2.5 text-xs font-semibold text-kx-muted transition hover:bg-kx-card hover:text-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-kx-onAccent"
+        : "h-9 rounded-full border border-kx-stroke/40 bg-kx-surface px-3 text-xs font-semibold text-kx-muted transition hover:border-kx-accent/40 hover:text-kx-accent data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accentSoft data-[active=true]:text-kx-accent"}
+    >
+      {children}
+    </button>
+  );
+}
+
+/// 筛选面板（对齐 iOS：分组顺序 价格 → 户型/主属性 → 条件 → 位置）。
+/// - 属性从原生 <select> 改为墨绿 pill 单选组（再点一次取消）；filters 状态结构不变，查询层零改动。
+/// - 布尔属性合并进「条件」分区，作为开关 pill。
+/// - 位置块渐进披露：默认一行「不限 + 都市圈」，城市与都道府县收进「更多地区」。
 function ListingFilterPanel({
   type,
   currentCitySlug,
@@ -4285,116 +4536,157 @@ function ListingFilterPanel({
 }) {
   const { locale } = useI18n();
   const set = (key: string, value: string) => onChange({ ...filters, [key]: value });
+  const toggle = (key: string, value: string) => set(key, (filters[key] || "") === value ? "" : value);
   const setScopeArea = (value: string) => onChange({ ...filters, scope_area: value, scope_city: "", scope_province: "" });
   const setScopeCity = (value: string) => onChange({ ...filters, scope_area: "", scope_city: value, scope_province: "" });
   const setScopeProvince = (value: string) => onChange({ ...filters, scope_area: "", scope_city: "", scope_province: value });
   const clearScope = () => onChange({ ...filters, scope_area: "", scope_city: "", scope_province: "" });
   const reset = () => onChange({});
   const currentCity = getCityBySlug(currentCitySlug);
+  // 已选中城市 / 都道府县时保持展开，否则细节收起。
+  const [moreRegionsOpen, setMoreRegionsOpen] = useState(() => Boolean(filters.scope_city || filters.scope_province));
+  const groups = filterOptions(type, context);
+  const choiceGroups = groups.filter((group) => group.options.length > 1);
+  const boolGroups = groups.filter((group) => group.options.length === 1);
+  const priceTitle = context === "lodging"
+    ? pickText(locale, "每晚价格", "1泊料金", "Nightly price")
+    : type === "rental"
+      ? pickText(locale, "租金", "家賃", "Rent")
+      : type === "job" || type === "hiring"
+        ? pickText(locale, "薪资", "給与", "Salary")
+        : pickText(locale, "价格", "価格", "Price");
+  const anyLabel = pickText(locale, "不限", "指定なし", "Any");
+  const scopeClear = !filters.scope_area && !filters.scope_city && !filters.scope_province;
   return (
-    <section className={variant === "inline" ? "rounded-[20px] bg-kx-surface/70 p-3" : "sticky top-24 rounded-3xl border border-kx-stroke/60 bg-kx-card p-4 shadow-kx-card"}>
+    <section
+      aria-label={pickText(locale, "筛选", "絞り込み", "Filters")}
+      className={variant === "inline" ? "rounded-[20px] bg-kx-surface/70 p-3.5 sm:p-4" : "sticky top-24 rounded-3xl border border-kx-stroke/60 bg-kx-card p-4 shadow-kx-card"}
+    >
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-black text-kx-text">{pickText(locale, "筛选", "絞り込み", "Filters")}</h3>
-        <button type="button" onClick={reset} className="text-xs font-bold text-kx-subtle hover:text-kx-text">{pickText(locale, "清空", "クリア", "Clear")}</button>
+        <button type="button" onClick={reset} className="text-xs font-bold text-kx-subtle transition hover:text-kx-accent">{pickText(locale, "清空全部", "すべてクリア", "Clear all")}</button>
       </div>
-      <div className="mt-3 rounded-[18px] border border-kx-stroke/50 bg-kx-card p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <p className="text-xs font-black text-kx-muted">{pickText(locale, "城市范围", "エリア範囲", "City scope")}</p>
-            <p className="mt-0.5 text-[11px] font-semibold text-kx-subtle">{pickText(locale, "关东圈、关西圈和其他热门城市已收进这里。", "首都圏・関西圏など主要エリアはこちらにまとめています。", "Kanto, Kansai and other popular areas are grouped here.")}</p>
+      <div className="mt-4 space-y-5">
+        {/* ① 价格 */}
+        <div role="group" aria-label={priceTitle}>
+          <FilterSectionTitle>{priceTitle}</FilterSectionTitle>
+          <div className="mt-2 grid max-w-sm grid-cols-2 gap-2">
+            <input
+              value={filters.min_price || ""}
+              onChange={(e) => set("min_price", e.target.value.replace(/[^\d.]/g, ""))}
+              inputMode="numeric"
+              aria-label={pickText(locale, `最低${priceTitle}`, `${priceTitle}の下限`, `Min ${priceTitle.toLowerCase()}`)}
+              placeholder={pickText(locale, "最低", "下限", "Min")}
+              className="kx-input h-10"
+            />
+            <input
+              value={filters.max_price || ""}
+              onChange={(e) => set("max_price", e.target.value.replace(/[^\d.]/g, ""))}
+              inputMode="numeric"
+              aria-label={pickText(locale, `最高${priceTitle}`, `${priceTitle}の上限`, `Max ${priceTitle.toLowerCase()}`)}
+              placeholder={pickText(locale, "最高", "上限", "Max")}
+              className="kx-input h-10"
+            />
+          </div>
+        </div>
+        {/* ② 户型 / 主属性（多选项 → pill 单选组，再点一次取消） */}
+        {choiceGroups.map((group) => (
+          <div key={group.key} role="group" aria-label={group.label}>
+            <FilterSectionTitle>{group.label}</FilterSectionTitle>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <ListingFilterPill active={!(filters[group.key] || "").trim()} onClick={() => set(group.key, "")}>{anyLabel}</ListingFilterPill>
+              {group.options.map((item) => (
+                <ListingFilterPill key={item.value} active={filters[group.key] === item.value} onClick={() => toggle(group.key, item.value)}>
+                  {item.label}
+                </ListingFilterPill>
+              ))}
+            </div>
+          </div>
+        ))}
+        {/* ③ 条件（布尔属性合并为开关 pill） */}
+        {boolGroups.length ? (
+          <div role="group" aria-label={pickText(locale, "条件", "条件", "Conditions")}>
+            <FilterSectionTitle>{pickText(locale, "条件", "条件", "Conditions")}</FilterSectionTitle>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {boolGroups.map((group) => {
+                const option = group.options[0];
+                const label = option.label.length >= group.label.length ? option.label : group.label;
+                return (
+                  <ListingFilterPill key={group.key} active={filters[group.key] === option.value} onClick={() => toggle(group.key, option.value)}>
+                    {label}
+                  </ListingFilterPill>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+        {/* ④ 位置（渐进披露：都市圈一行，其余收进「更多地区」） */}
+        <div role="group" aria-label={pickText(locale, "位置", "エリア", "Location")}>
+          <FilterSectionTitle>{pickText(locale, "位置", "エリア", "Location")}</FilterSectionTitle>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <ListingFilterPill active={scopeClear} onClick={clearScope}>{anyLabel}</ListingFilterPill>
+            {CITY_AREA_GROUPS.map((group) => (
+              <ListingFilterPill key={group.slug} active={filters.scope_area === group.slug} onClick={() => setScopeArea(group.slug)}>
+                {group.label}
+              </ListingFilterPill>
+            ))}
           </div>
           <button
             type="button"
-            onClick={clearScope}
-            data-active={!filters.scope_area && !filters.scope_city && !filters.scope_province}
-            className="h-8 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-muted transition hover:border-kx-accent/40 hover:text-kx-accent data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white"
+            onClick={() => setMoreRegionsOpen((value) => !value)}
+            aria-expanded={moreRegionsOpen}
+            className="mt-2.5 inline-flex h-8 items-center gap-1 text-xs font-semibold text-kx-accent transition hover:underline"
           >
-            {pickText(locale, "跟随顶部", "上部に合わせる", "Follow top")}
+            {moreRegionsOpen
+              ? pickText(locale, "收起城市与都道府县", "市区・都道府県を閉じる", "Hide cities & prefectures")
+              : pickText(locale, "更多城市与都道府县", "市区・都道府県をもっと見る", "More cities & prefectures")}
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${moreRegionsOpen ? "rotate-180" : ""}`} />
           </button>
-        </div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {CITY_AREA_GROUPS.map((group) => (
-            <button
-              key={group.slug}
-              type="button"
-              onClick={() => setScopeArea(group.slug)}
-              data-active={filters.scope_area === group.slug}
-              className="h-9 rounded-full border border-kx-stroke/60 bg-kx-surface px-3 text-xs font-black text-kx-muted transition hover:border-kx-accent/40 hover:bg-kx-card hover:text-kx-accent data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
-            >
-              {group.label}
-            </button>
-          ))}
-        </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-4">
-          {CITY_AREA_GROUPS.map((group) => (
-            <div key={group.slug} className="rounded-2xl bg-kx-surface/80 p-2">
-              <p className="px-1 pb-1 text-[11px] font-black text-kx-subtle">{group.label}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {group.cities.map((slug) => {
-                  const city = getCityBySlug(slug);
-                  if (!city) return null;
-                  return (
-                    <button
-                      key={slug}
-                      type="button"
-                      onClick={() => setScopeCity(slug)}
-                      data-active={filters.scope_city === slug}
-                      className="h-8 rounded-full px-2.5 text-xs font-black text-kx-muted transition hover:bg-kx-card hover:text-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white"
-                    >
-                      {city.slug === currentCity?.slug ? `${city.name} · 当前` : city.name}
-                    </button>
-                  );
-                })}
+          {moreRegionsOpen ? (
+            <div className="mt-2 space-y-3">
+              <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                {CITY_AREA_GROUPS.map((group) => (
+                  <div key={group.slug} className="rounded-2xl bg-kx-surface/80 p-2">
+                    <p className="px-1 pb-1 text-[11px] font-bold text-kx-subtle">{group.label}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.cities.map((slug) => {
+                        const city = getCityBySlug(slug);
+                        if (!city) return null;
+                        return (
+                          <ListingFilterPill key={slug} subtle active={filters.scope_city === slug} onClick={() => setScopeCity(slug)}>
+                            {city.slug === currentCity?.slug ? `${city.name} · 当前` : city.name}
+                          </ListingFilterPill>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-          ))}
-        </div>
-        <div className="mt-3 border-t border-kx-stroke/50 pt-3">
-          <p className="text-xs font-black text-kx-muted">都道府县</p>
-          <p className="mt-0.5 text-[11px] font-semibold text-kx-subtle">选一个县 = 看该县全部城市。</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {JP_METRO_CIRCLES.map((circle) => (
-              <div key={circle.code} className="rounded-2xl bg-kx-surface/80 p-2">
-                <p className="px-1 pb-1 text-[11px] font-black text-kx-subtle">{circle.name}</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {circle.provinceCodes.map((pc) => {
-                    const prov = provincesFor("jp").find((p) => p.code === pc);
-                    if (!prov) return null;
-                    return (
-                      <button
-                        key={pc}
-                        type="button"
-                        onClick={() => setScopeProvince(pc)}
-                        data-active={filters.scope_province === pc}
-                        className="h-8 rounded-full px-2.5 text-xs font-black text-kx-muted transition hover:bg-kx-card hover:text-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white"
-                      >
-                        {prov.name}
-                      </button>
-                    );
-                  })}
+              <div className="border-t border-kx-stroke/40 pt-3">
+                <p className="text-xs font-bold text-kx-muted">{pickText(locale, "都道府县", "都道府県", "Prefectures")}</p>
+                <p className="mt-0.5 text-[11px] font-normal text-kx-subtle">{pickText(locale, "选一个县 = 看该县全部城市。", "都道府県を選ぶと県内すべての市区が対象になります。", "Pick a prefecture to include all its cities.")}</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {JP_METRO_CIRCLES.map((circle) => (
+                    <div key={circle.code} className="rounded-2xl bg-kx-surface/80 p-2">
+                      <p className="px-1 pb-1 text-[11px] font-bold text-kx-subtle">{circle.name}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {circle.provinceCodes.map((pc) => {
+                          const prov = provincesFor("jp").find((p) => p.code === pc);
+                          if (!prov) return null;
+                          return (
+                            <ListingFilterPill key={pc} subtle active={filters.scope_province === pc} onClick={() => setScopeProvince(pc)}>
+                              {prov.name}
+                            </ListingFilterPill>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ) : null}
         </div>
-      </div>
-      <div className={variant === "inline" ? "mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" : "mt-3 grid gap-3"}>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label={context === "lodging" ? "每晚最低价" : type === "rental" ? "最低租金" : type === "job" || type === "hiring" ? "最低薪资" : "最低价格"}>
-            <input value={filters.min_price || ""} onChange={(e) => set("min_price", e.target.value.replace(/[^\d.]/g, ""))} className="kx-input h-10" />
-          </Field>
-          <Field label={context === "lodging" ? "每晚最高价" : type === "rental" ? "最高租金" : type === "job" || type === "hiring" ? "最高薪资" : "最高价格"}>
-            <input value={filters.max_price || ""} onChange={(e) => set("max_price", e.target.value.replace(/[^\d.]/g, ""))} className="kx-input h-10" />
-          </Field>
-        </div>
-        {filterOptions(type, context).map((group) => (
-          <Field key={group.key} label={group.label}>
-            <select value={filters[group.key] || ""} onChange={(e) => set(group.key, e.target.value)} className="kx-input h-10">
-              <option value="">不限</option>
-              {group.options.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-            </select>
-          </Field>
-        ))}
       </div>
     </section>
   );
@@ -4464,7 +4756,7 @@ function MiniListingCard({ listing }: { listing: KXCityListing }) {
       </span>
       <span className="block p-2.5">
         <span className="block text-sm font-black text-[rgb(var(--kx-living-ink))]">{priceLabel(listing, locale)}</span>
-        <span className="mt-0.5 line-clamp-2 block text-xs font-bold leading-4 text-[rgb(var(--kx-living-muted))]">{title}</span>
+        <span className="mt-0.5 line-clamp-2 block text-xs font-medium leading-4 text-kx-muted">{title}</span>
       </span>
     </Link>
   );
@@ -4576,7 +4868,7 @@ function SellerBox({ item }: { item: KXCityListing }) {
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold">
-        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ring-1 ${verified ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/25" : "bg-kx-surface text-kx-muted ring-kx-stroke/60"}`}>
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ring-1 ${verified ? "bg-kx-accentSoft text-kx-accent ring-kx-accent/25" : "bg-kx-surface text-kx-muted ring-kx-stroke/60"}`}>
           <BadgeCheck className="h-3.5 w-3.5" /> {verified ? pickText(locale, "已实名认证", "本人確認済み", "ID verified") : pickText(locale, "未认证", "未認証", "Unverified")}
         </span>
         {joinLabel ? (
@@ -4585,13 +4877,13 @@ function SellerBox({ item }: { item: KXCityListing }) {
           </span>
         ) : null}
         {heat > 0 ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-1 text-orange-700 ring-1 ring-orange-200 dark:bg-orange-500/15 dark:text-orange-300 dark:ring-orange-500/25">
+          <span className="inline-flex items-center gap-1 rounded-full bg-kx-heat/10 px-2 py-1 text-kx-heat ring-1 ring-kx-heat/25">
             <Flame className="h-3.5 w-3.5" /> {pickText(locale, "贡献值", "貢献度", "Contribution")} {compactCount(heat)}
           </span>
         ) : null}
       </div>
       {isNew && !verified ? (
-        <p className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
+        <p className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-kx-heat">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {pickText(locale, "新账号，交易前请多核实身份、当面验货。", "新規アカウントです。取引前に身元確認と現物確認をおすすめします。", "New account — verify identity and inspect items in person before trading.")}
         </p>
       ) : null}
@@ -4626,9 +4918,9 @@ const HIGH_RISK_LISTING_TYPES = new Set<string>(["rental", "for_sale", "job", "h
 function SafetyNotice({ type }: { type: KXListingType }) {
   const { locale } = useI18n();
   const highRisk = HIGH_RISK_LISTING_TYPES.has(type);
-  const box = highRisk ? "border-rose-200 bg-rose-50 dark:border-rose-500/25 dark:bg-rose-500/10" : "border-amber-200 bg-amber-50 dark:border-amber-500/25 dark:bg-amber-500/10";
-  const head = highRisk ? "text-rose-900 dark:text-rose-200" : "text-amber-900 dark:text-amber-200";
-  const body = highRisk ? "text-rose-900/80 dark:text-rose-200/75" : "text-amber-900/80 dark:text-amber-200/75";
+  const box = highRisk ? "border-kx-danger/25 bg-kx-danger/[0.06]" : "border-kx-heat/30 bg-kx-heat/[0.08]";
+  const head = highRisk ? "text-kx-danger" : "text-kx-heat";
+  const body = highRisk ? "text-kx-danger/80" : "text-kx-heat/80";
   return (
     <section className={`mt-5 rounded-2xl border p-4 ${box}`}>
       <h3 className={`flex items-center gap-2 text-sm font-black ${head}`}>
@@ -4724,12 +5016,12 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
     <section className="mt-5 rounded-2xl border border-kx-stroke/60 bg-kx-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="flex items-center gap-2 text-base font-black text-kx-text">
-          <Star className="h-4.5 w-4.5 fill-amber-400 text-amber-400" />
+          <Star className="h-4.5 w-4.5 fill-kx-heat text-kx-heat" />
           {pickText(locale, "用户点评", "口コミ", "Reviews")}
           {ratingCount ? <span className="text-sm font-bold text-kx-subtle">({ratingCount})</span> : null}
         </h3>
         {!isOwner ? (
-          <button type="button" onClick={openForm} className="inline-flex h-9 items-center gap-1.5 rounded-full bg-amber-500 px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(245,158,11,0.95)] transition hover:bg-amber-600">
+          <button type="button" onClick={openForm} className="inline-flex h-9 items-center gap-1.5 rounded-full bg-kx-accent px-3.5 text-xs font-black text-kx-onAccent transition hover:brightness-95">
             <MessageSquare className="h-3.5 w-3.5" />
             {myReview ? pickText(locale, "修改我的点评", "口コミを編集", "Edit my review") : pickText(locale, "写点评", "口コミを書く", "Write a review")}
           </button>
@@ -4738,8 +5030,8 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
 
       {ratingCount > 0 ? (
         <div className="mt-4 grid gap-4 sm:grid-cols-[auto_1fr] sm:items-center">
-          <div className="flex flex-col items-center justify-center rounded-2xl bg-amber-50/80 px-6 py-4 ring-1 ring-amber-100">
-            <p className="text-4xl font-black text-amber-600">{ratingAvg.toFixed(1)}</p>
+          <div className="flex flex-col items-center justify-center rounded-2xl bg-kx-heat/[0.08] px-6 py-4 ring-1 ring-kx-heat/20">
+            <p className="text-4xl font-black text-kx-heat">{ratingAvg.toFixed(1)}</p>
             <RatingStars value={ratingAvg} showValue={false} />
             <p className="mt-1 text-xs font-bold text-kx-muted">{pickText(locale, `${ratingCount} 条点评`, `${ratingCount} 件の口コミ`, `${ratingCount} reviews`)}</p>
           </div>
@@ -4750,7 +5042,7 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
                 <div key={star} className="flex items-center gap-2">
                   <span className="w-8 shrink-0 text-right text-xs font-black text-kx-muted">{pickText(locale, `${star} 星`, `${star}つ`, `${star}★`)}</span>
                   <div className="h-2 flex-1 overflow-hidden rounded-full bg-kx-surface">
-                    <div className="h-full rounded-full bg-amber-400" style={{ width: `${(count / histogramMax) * 100}%` }} />
+                    <div className="h-full rounded-full bg-kx-heat" style={{ width: `${(count / histogramMax) * 100}%` }} />
                   </div>
                   <span className="w-8 shrink-0 text-xs font-bold text-kx-subtle">{count}</span>
                 </div>
@@ -4770,15 +5062,15 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
       )}
 
       {formOpen ? (
-        <div className="mt-4 rounded-2xl border border-amber-200/80 bg-amber-50/60 p-4">
+        <div className="mt-4 rounded-2xl border border-kx-stroke/60 bg-kx-surface/70 p-4">
           <p className="text-sm font-black text-kx-text">{myReview ? pickText(locale, "修改点评", "口コミを編集", "Edit review") : pickText(locale, "你的体验如何？", "ご利用はいかがでしたか？", "How was your experience?")}</p>
           <div className="mt-2 flex items-center gap-1.5">
             {[1, 2, 3, 4, 5].map((star) => (
               <button key={star} type="button" onClick={() => setRating(star)} aria-label={pickText(locale, `${star} 星`, `${star}つ星`, `${star} stars`)}>
-                <Star className={`h-7 w-7 transition ${star <= rating ? "fill-amber-400 text-amber-400" : "fill-kx-stroke/50 text-kx-subtle hover:fill-amber-200 hover:text-amber-200"}`} />
+                <Star className={`h-7 w-7 transition ${star <= rating ? "fill-kx-heat text-kx-heat" : "fill-kx-stroke/50 text-kx-subtle hover:fill-kx-heat/40 hover:text-kx-heat/40"}`} />
               </button>
             ))}
-            <span className="ml-1 text-sm font-black text-amber-600">{[pickText(locale, "很差", "とても悪い", "Terrible"), pickText(locale, "较差", "悪い", "Poor"), pickText(locale, "一般", "普通", "Okay"), pickText(locale, "不错", "良い", "Good"), pickText(locale, "超赞", "最高", "Excellent")][rating - 1]}</span>
+            <span className="ml-1 text-sm font-black text-kx-heat">{[pickText(locale, "很差", "とても悪い", "Terrible"), pickText(locale, "较差", "悪い", "Poor"), pickText(locale, "一般", "普通", "Okay"), pickText(locale, "不错", "良い", "Good"), pickText(locale, "超赞", "最高", "Excellent")][rating - 1]}</span>
           </div>
           <textarea
             value={content}
@@ -4788,7 +5080,7 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
             className="kx-input mt-3 min-h-24 w-full p-3 text-sm"
           />
           <div className="mt-3 flex gap-2">
-            <button type="button" disabled={submit.isPending} onClick={() => submit.mutate()} className="inline-flex h-10 items-center gap-2 rounded-full bg-kx-accent px-5 text-sm font-black text-white disabled:opacity-60">
+            <button type="button" disabled={submit.isPending} onClick={() => submit.mutate()} className="inline-flex h-10 items-center gap-2 rounded-full bg-kx-accent px-5 text-sm font-black text-kx-onAccent disabled:opacity-60">
               <Send className="h-4 w-4" />
               {submit.isPending ? pickText(locale, "发布中…", "投稿中…", "Posting…") : pickText(locale, "发布点评", "口コミを投稿", "Post review")}
             </button>
@@ -4814,7 +5106,7 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
                   </p>
                 </div>
                 {user && review.user_id === user.id ? (
-                  <button type="button" onClick={() => remove.mutate(review.id)} className="shrink-0 text-xs font-bold text-kx-subtle transition hover:text-rose-500">
+                  <button type="button" onClick={() => remove.mutate(review.id)} className="shrink-0 text-xs font-bold text-kx-subtle transition hover:text-kx-danger">
                     {pickText(locale, "删除", "削除", "Delete")}
                   </button>
                 ) : null}
@@ -4839,13 +5131,13 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
                       type="button"
                       disabled={reply.isPending || !replyText.trim()}
                       onClick={() => reply.mutate({ reviewId: review.id, content: replyText.trim() })}
-                      className="inline-flex h-10 shrink-0 items-center rounded-full bg-kx-accent px-4 text-xs font-black text-white disabled:opacity-50"
+                      className="inline-flex h-10 shrink-0 items-center rounded-full bg-kx-accent px-4 text-xs font-black text-kx-onAccent disabled:opacity-50"
                     >
                       {pickText(locale, "回复", "返信", "Reply")}
                     </button>
                   </div>
                 ) : (
-                  <button type="button" onClick={() => { setReplyFor(review.id); setReplyText(""); }} className="mt-2 text-xs font-black text-blue-600 transition hover:text-kx-accent">
+                  <button type="button" onClick={() => { setReplyFor(review.id); setReplyText(""); }} className="mt-2 text-xs font-black text-kx-accent transition hover:underline">
                     {pickText(locale, "回复点评", "口コミに返信", "Reply to review")}
                   </button>
                 )
@@ -4899,10 +5191,10 @@ function ListingAttributeEditor({
               type="button"
               onClick={() => set(field.key, value[field.key] === "true" ? "false" : "true")}
               data-active={value[field.key] === "true"}
-              className="flex h-11 w-full items-center justify-between rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold text-kx-muted transition data-[active=true]:border-emerald-200 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-800"
+              className="flex h-11 w-full items-center justify-between rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold text-kx-muted transition data-[active=true]:border-kx-accent/40 data-[active=true]:bg-kx-accentSoft data-[active=true]:text-kx-accent"
             >
               <span>{value[field.key] === "true" ? "是" : "否"}</span>
-              <span className="grid h-6 w-6 place-items-center rounded-full bg-kx-surface text-[11px] data-[active=true]:bg-emerald-600 data-[active=true]:text-white" data-active={value[field.key] === "true"}>{value[field.key] === "true" ? "✓" : ""}</span>
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-kx-surface text-[11px] data-[active=true]:bg-kx-accent data-[active=true]:text-kx-onAccent" data-active={value[field.key] === "true"}>{value[field.key] === "true" ? "✓" : ""}</span>
             </button>
           ) : field.kind === "select" ? (
             <select value={value[field.key] || ""} onChange={(e) => set(field.key, e.target.value)} className="kx-input h-11">
@@ -4933,23 +5225,96 @@ function Field({ field, label, children, required, error }: { field?: string; la
   );
 }
 
+/// 频道骨架屏：逐频道复刻真实卡片的布局（网格列数 / 圆角 / 行高一致），
+/// 加载完成后零布局跳动。
 function ListingSkeletonGrid({ type }: { type: KXListingType }) {
-  if (type === "rental") {
-    // 照片网格的骨架
+  if (type === "rental" || type === "for_sale") {
+    // 照片主导网格的骨架：图 + 价格行 + 标题 + meta 两行
     return (
       <div className="grid grid-cols-1 gap-x-4 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
           <div key={i}>
-            <Skeleton className="aspect-[4/3] rounded-kx-lg" />
-            <Skeleton className="mt-2.5 h-4 w-3/4 rounded-md" />
+            <Skeleton className="aspect-[4/3] rounded-[20px]" />
+            <Skeleton className="mt-2.5 h-5 w-28 rounded-md" />
+            <Skeleton className="mt-1.5 h-4 w-3/4 rounded-md" />
             <Skeleton className="mt-1.5 h-3.5 w-1/2 rounded-md" />
           </div>
         ))}
       </div>
     );
   }
-  const count = type === "secondhand" ? 8 : 5;
-  return <div className={type === "secondhand" ? "grid grid-cols-2 gap-3 md:grid-cols-4" : "space-y-3"}>{Array.from({ length: count }).map((_, i) => <Skeleton key={i} className={type === "secondhand" ? "h-64 rounded-2xl" : "h-40 rounded-2xl"} />)}</div>;
+  if (type === "secondhand") {
+    // 等高二手卡骨架：方图 + 价格大字 + 两行标题 + meta
+    return (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className="overflow-hidden rounded-[20px] border border-kx-stroke/18 bg-kx-surface">
+            <Skeleton className="aspect-square rounded-none" />
+            <div className="space-y-1.5 p-3">
+              <Skeleton className="h-5 w-20 rounded-md" />
+              <Skeleton className="h-3.5 w-full rounded-md" />
+              <Skeleton className="h-3.5 w-2/3 rounded-md" />
+              <Skeleton className="h-3 w-1/2 rounded-md" />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (type === "job" || type === "hiring") {
+    // 职位行卡骨架：公司标 + 标题/公司行 + 薪资 + 标签行
+    return (
+      <div className="kx-job-list">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="flex gap-3.5 border-b border-kx-stroke/20 p-4 last:border-0">
+            <Skeleton className="h-12 w-12 shrink-0 rounded-[13px]" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-4 w-2/3 rounded-md" />
+              <Skeleton className="h-3.5 w-1/2 rounded-md" />
+              <Skeleton className="h-5 w-32 rounded-md" />
+              <div className="flex gap-1.5">
+                <Skeleton className="h-5 w-14 rounded-md" />
+                <Skeleton className="h-5 w-14 rounded-md" />
+                <Skeleton className="h-5 w-14 rounded-md" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (type === "local_service") {
+    // 服务卡骨架：16:9 图 + 标题 + 评分/价位行 + 位置行
+    return (
+      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="overflow-hidden rounded-[20px] border border-kx-stroke/18 bg-kx-surface">
+            <Skeleton className="aspect-[16/9] rounded-none" />
+            <div className="space-y-2 p-3.5">
+              <Skeleton className="h-4 w-3/4 rounded-md" />
+              <Skeleton className="h-3.5 w-1/2 rounded-md" />
+              <Skeleton className="h-3.5 w-2/3 rounded-md" />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  // 优惠等通用卡：4:3 图 + 价格 + 标题（对齐 MarketplaceCard 的 auto-fill 网格）
+  return (
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))] gap-4">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="overflow-hidden rounded-kx-lg border border-kx-stroke/50 bg-kx-card">
+          <Skeleton className="aspect-[4/3] rounded-none" />
+          <div className="space-y-2 p-3.5">
+            <Skeleton className="h-5 w-24 rounded-md" />
+            <Skeleton className="h-4 w-3/4 rounded-md" />
+            <Skeleton className="h-3.5 w-1/2 rounded-md" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ListingEmptyState({ type, cityName, stays = false }: { type: KXListingType; cityName: string; stays?: boolean }) {
@@ -4986,26 +5351,30 @@ function ListingEmptyState({ type, cityName, stays = false }: { type: KXListingT
   );
 }
 
-function StatusBadge({ item }: { item: KXCityListing }) {
-  const statusTone = item.status === "published"
-    ? "border-blue-100 bg-blue-50 text-blue-700"
-    : item.status === "pending_review"
-      ? "border-amber-100 bg-amber-50 text-amber-700"
-      : "border-kx-stroke/60 bg-kx-surface text-kx-muted";
+/// 状态徽章（对齐 iOS：默认态零噪音）。
+/// - published 在公开面不出徽章；reserved / 待审核 用琥珀（--kx-heat），其余状态灰。
+/// - 认证 = 墨绿描边（--kx-accent），不再使用蓝 / 天蓝。
+/// - verbose 供工作台 / 后台使用：published 也渲染一枚中性徽章，方便运营核对。
+function StatusBadge({ item, verbose = false }: { item: KXCityListing; verbose?: boolean }) {
+  const showStatus = verbose || item.status !== "published";
+  const statusTone = item.status === "reserved" || item.status === "pending_review"
+    ? "border-kx-heat/35 bg-kx-heat/10 text-kx-heat"
+    : "border-kx-stroke/60 bg-kx-surface text-kx-muted";
+  const showVerification = Boolean(item.verification_status) && item.verification_status !== "unverified";
   const verificationTone = item.verification_status === "verified"
-    ? "border-sky-100 bg-sky-50 text-sky-700"
-    : item.verification_status === "pending" || item.verification_status === "needs_review"
-      ? "border-amber-100 bg-amber-50 text-amber-700"
-      : "border-kx-stroke/60 bg-kx-surface text-kx-muted";
-  const showVerification = item.verification_status && item.verification_status !== "unverified";
+    ? "border-kx-accent/45 bg-transparent text-kx-accent"
+    : "border-kx-heat/35 bg-kx-heat/10 text-kx-heat";
   const verificationText = item.verification_status === "verified" ? "认证" : verificationLabel(item.verification_status);
+  if (!showStatus && !showVerification) return null;
   return (
     <span className="flex shrink-0 flex-wrap justify-end gap-1.5">
-      <span className={`inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-black leading-none ${statusTone}`}>
-        {listingStatusLabel(item)}
-      </span>
+      {showStatus ? (
+        <span className={`inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-bold leading-none ${statusTone}`}>
+          {listingStatusLabel(item)}
+        </span>
+      ) : null}
       {showVerification ? (
-        <span className={`inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-black leading-none ${verificationTone}`}>
+        <span className={`inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-bold leading-none ${verificationTone}`}>
           {item.verification_status === "verified" ? <CheckCircle2 className="h-3 w-3" /> : null}
           {verificationText}
         </span>

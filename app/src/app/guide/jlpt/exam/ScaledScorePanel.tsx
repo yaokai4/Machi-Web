@@ -6,7 +6,7 @@
 // 约定）；不含聴解，note 免责必须展示，绝不暗示与官方成绩等价。
 
 import type { GuideJlptScaledResult } from "@/lib/guide";
-import { fmtDuration, type Tri } from "../JlptKit";
+import { fmtDuration, JLPT_CARD, type Tri } from "../JlptKit";
 import {
   localizedScoreDivisionLabel,
   localizedScoreReferenceNote,
@@ -46,35 +46,45 @@ export function ScaledScorePanel({
         )
       : t(`未达笔试参考线 ${scaled.passLineWritten}`, `筆記参考ライン ${scaled.passLineWritten} 未達`, `Below written reference line ${scaled.passLineWritten}`);
   return (
-    <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-6 text-center shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
-      <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
+    <div className={[JLPT_CARD, "relative overflow-hidden rounded-[28px] px-6 py-8 text-center sm:px-7"].join(" ")}>
+      {/* one faint halo behind the number — same scorecard face as JlptScoreHero */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-20 left-1/2 h-56 w-56 -translate-x-1/2 rounded-full opacity-60 blur-3xl"
+        style={{
+          background: passRef
+            ? "radial-gradient(closest-side, rgb(16 185 129 / 0.14), transparent)"
+            : "radial-gradient(closest-side, rgb(245 158 11 / 0.1), transparent)",
+        }}
+      />
+      <p className="relative text-[11px] font-semibold uppercase tracking-[0.2em] text-[rgb(var(--kx-living-muted))]">
         {t("JLPT 标准出分 · 笔试参考", "JLPT 準拠スコア・筆記参考", "JLPT-style written score")}
       </p>
 
-      <p className="mt-3 leading-none">
-        <span className={["text-[52px] font-black tabular-nums", accent].join(" ")}>{scaled.writtenTotal}</span>
-        <span className="ml-1.5 text-base font-bold text-[rgb(var(--kx-living-muted))]">/ {scaled.writtenMax}</span>
+      <p className="relative mt-3 leading-none">
+        <span className={["text-[56px] font-black tabular-nums tracking-[-0.02em]", accent].join(" ")}>{scaled.writtenTotal}</span>
+        <span className="ml-1.5 text-base font-semibold text-[rgb(var(--kx-living-muted))]">/ {scaled.writtenMax}</span>
       </p>
 
       <p
         className={[
-          "mx-auto mt-3 inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-black",
+          "relative mx-auto mt-4 inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold ring-1",
           passRef
-            ? "bg-emerald-500/[0.12] text-emerald-600 dark:text-emerald-400"
-            : "bg-amber-500/[0.12] text-amber-600 dark:text-amber-400",
+            ? "bg-emerald-500/[0.1] text-emerald-600 ring-emerald-500/25 dark:text-emerald-400"
+            : "bg-amber-500/[0.1] text-amber-600 ring-amber-500/25 dark:text-amber-400",
         ].join(" ")}
       >
         {verdict}
       </p>
 
       {typeof correct === "number" && typeof total === "number" && total > 0 ? (
-        <p className="mt-2 text-xs font-semibold text-[rgb(var(--kx-living-muted))]">
+        <p className="relative mt-2.5 text-xs font-medium tabular-nums text-[rgb(var(--kx-living-muted))]">
           {t(`答对 ${correct} / ${total}`, `正解 ${correct} / ${total}`, `${correct} / ${total} correct`)}
           {typeof durationSeconds === "number" && durationSeconds > 0 ? ` · ${fmtDuration(durationSeconds)}` : null}
         </p>
       ) : null}
 
-      <div className="mt-5 space-y-4 text-left">
+      <div className="relative mt-6 space-y-4 text-left">
         {scaled.scales.map((scale) => {
           const max = Math.max(1, scale.scaledMax);
           const fillPct = Math.min(100, Math.max(2, (scale.scaled / max) * 100));
@@ -83,10 +93,10 @@ export function ScaledScorePanel({
           return (
             <div key={scale.key}>
               <div className="flex items-baseline justify-between gap-2">
-                <p className="text-[13px] font-bold text-[rgb(var(--kx-living-ink))]">{label(scale.key, scale.label)}</p>
-                <p className="text-sm font-black tabular-nums">
+                <p className="text-[13px] font-semibold text-[rgb(var(--kx-living-ink))]">{label(scale.key, scale.label)}</p>
+                <p className="text-sm font-bold tabular-nums">
                   <span className={scale.passed ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>{scale.scaled}</span>
-                  <span className="text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]"> / {scale.scaledMax}</span>
+                  <span className="text-[11px] font-medium text-[rgb(var(--kx-living-muted))]"> / {scale.scaledMax}</span>
                 </p>
               </div>
               <div className="relative mt-1.5 h-2.5 overflow-hidden rounded-full bg-[rgb(var(--kx-living-ink))]/[0.06]">
@@ -99,7 +109,7 @@ export function ScaledScorePanel({
                   />
                 ) : null}
               </div>
-              <div className="mt-1 flex items-center justify-between text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+              <div className="mt-1 flex items-center justify-between text-[11px] font-medium tabular-nums text-[rgb(var(--kx-living-muted))]">
                 <span>{t(`答对 ${scale.raw}/${scale.rawMax}`, `正解 ${scale.raw}/${scale.rawMax}`, `${scale.raw}/${scale.rawMax} correct`)}</span>
                 {scale.sectionMin > 0 ? (
                   <span>{t(`基准点 ${scale.sectionMin}`, `基準点 ${scale.sectionMin}`, `Section min ${scale.sectionMin}`)}</span>
@@ -110,7 +120,7 @@ export function ScaledScorePanel({
         })}
       </div>
 
-      <p className="mt-5 text-[11px] leading-relaxed text-[rgb(var(--kx-living-muted))]">
+      <p className="relative mt-6 text-[11px] leading-relaxed text-[rgb(var(--kx-living-muted))]">
         {localizedScoreReferenceNote(language, "written")}
       </p>
     </div>

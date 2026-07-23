@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Flame, Hash, TrendingUp } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
-import { ErrorState, InlineLoading } from "@/components/design/States";
+import { ErrorState } from "@/components/design/States";
+import { FeedSkeletonList } from "@/components/feed/FeedSkeleton";
 import { PostCard } from "@/components/feed/PostCard";
 import { api } from "@/lib/api";
 import { compactNumber } from "@/lib/format";
@@ -29,7 +30,7 @@ export default function TrendingPage() {
       <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3">
         <div className="flex items-center gap-2">
           <TrendingUp className="w-5 h-5 text-kx-heat" />
-          <h1 className="text-xl font-black">{pick(locale, "热榜", "トレンド", "Trending")}</h1>
+          <h1 className="text-xl font-bold">{pick(locale, "热榜", "トレンド", "Trending")}</h1>
         </div>
         <p className="mt-1 text-sm text-kx-muted">
           {pick(
@@ -44,7 +45,9 @@ export default function TrendingPage() {
       {trending.isError ? (
         <ErrorState onRetry={() => trending.refetch()} />
       ) : trending.isLoading || !trending.data ? (
-        <InlineLoading />
+        // Post-shaped skeletons instead of a bare spinner — the swap to real
+        // trending cards doesn't jump.
+        <FeedSkeletonList className="px-3 sm:px-4 py-3" />
       ) : (
         <main className="px-3 sm:px-4 py-3 space-y-3">
           <section className="kx-card">

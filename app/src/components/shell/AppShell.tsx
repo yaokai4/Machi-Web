@@ -272,7 +272,7 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
         ) : (
           <BrandMark className="h-9 w-9 text-base" />
         )}
-        <BrandText className="hidden text-base font-black lg:inline">{brandTitle}</BrandText>
+        <BrandText className="hidden text-base font-bold lg:inline">{brandTitle}</BrandText>
       </Link>
       <nav className="flex flex-col gap-0.5 mt-1" aria-label={t("nav_primary")}>
         {NAV_ITEMS.map((item) => {
@@ -500,11 +500,11 @@ function DefaultRight() {
               <li key={topic.tag} className="border-b border-kx-stroke/40 last:border-0">
                 <Link
                   href={`/t/${encodeURIComponent(topic.tag)}`}
-                  className="group flex items-center gap-2.5 py-2 hover:bg-kx-soft/60 -mx-1 px-1 rounded-md"
+                  className="group flex items-center gap-2.5 py-2 hover:bg-kx-soft/60 -mx-1 px-1 rounded-kx-sm"
                 >
                   <span
                     className={clsx(
-                      "w-5 text-right font-black text-xs",
+                      "w-5 text-right font-bold text-xs",
                       idx < 3 ? "text-kx-heat" : "text-kx-muted",
                     )}
                   >
@@ -870,7 +870,7 @@ function MobileMoreSheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby="mobile-more-title"
-        className="fixed inset-x-0 z-[90] mx-auto overflow-y-auto overflow-x-hidden overscroll-contain rounded-[28px] border border-kx-stroke/70 bg-kx-surface shadow-[0_-8px_60px_-18px_rgba(15,23,42,0.4)] transform-gpu animate-kx-slide-up md:hidden"
+        className="fixed inset-x-0 z-[90] mx-auto overflow-y-auto overflow-x-hidden overscroll-contain rounded-kx-sheet border border-kx-stroke/50 bg-kx-surface shadow-kx-bar transform-gpu animate-kx-slide-up md:hidden"
         style={{
           bottom: "max(1.1rem, calc(env(safe-area-inset-bottom) + 0.35rem))",
           width: "min(calc(100vw - 1.2rem), 23.5rem)",
@@ -880,7 +880,7 @@ function MobileMoreSheet({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
-          <h2 id="mobile-more-title" className="text-base font-black text-kx-text">{t("more_menu")}</h2>
+          <h2 id="mobile-more-title" className="text-base font-bold text-kx-text">{t("more_menu")}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -894,20 +894,20 @@ function MobileMoreSheet({
           href="/membership"
           onClick={onClose}
           className={clsx(
-            "mx-3 mb-2 flex items-center gap-3 rounded-3xl border p-3 transition",
+            "mx-3 mb-2 flex items-center gap-3 rounded-kx-lg border p-3 transition",
             pathname?.startsWith("/membership")
               ? "border-kx-accent/25 bg-kx-accentSoft text-kx-accent"
               : "border-kx-stroke/60 bg-kx-card hover:border-kx-accent/25 hover:bg-kx-accentSoft/70",
           )}
         >
-          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accent text-white shadow-[0_12px_30px_rgba(37,99,235,0.24)]">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-kx-md bg-kx-accent text-kx-onAccent">
             <BadgeCheck className="h-5 w-5" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-[15px] font-black text-kx-text">{t("mem_title")}</span>
+            <span className="block text-[15px] font-bold text-kx-text">{t("mem_title")}</span>
             <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">{t("mem_mobile_summary")}</span>
           </span>
-          <span className="shrink-0 rounded-full bg-kx-accent/10 px-2.5 py-1 text-xs font-black text-kx-accent">
+          <span className="shrink-0 rounded-full bg-kx-accent/10 px-2.5 py-1 text-xs font-bold text-kx-accent">
             {user?.is_verified_member ? t("mem_status_active") : t("mem_view_plans")}
           </span>
         </Link>
@@ -918,7 +918,7 @@ function MobileMoreSheet({
               const active = hrefPath && pathname?.startsWith(hrefPath);
               const Icon = link.icon;
               const rowClass = clsx(
-                "flex w-full items-center gap-3 rounded-2xl px-3 py-3 font-semibold text-[15px] transition",
+                "flex w-full items-center gap-3 rounded-kx px-3 py-3 font-semibold text-[15px] transition",
                 active ? "bg-kx-accentSoft text-kx-accent" : "text-kx-text hover:bg-kx-soft",
               );
               const rowContent = (
@@ -956,7 +956,7 @@ function MobileMoreSheet({
             onClick={() => {
               setAppearance(isDark ? "light" : "dark");
             }}
-            className="w-full flex items-center gap-3 rounded-2xl px-3 py-3 text-[15px] font-semibold text-kx-text hover:bg-kx-soft"
+            className="w-full flex items-center gap-3 rounded-kx px-3 py-3 text-[15px] font-semibold text-kx-text hover:bg-kx-soft"
           >
             <span className="inline-flex w-9 h-9 items-center justify-center rounded-full bg-kx-soft text-kx-subtle">
               {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
@@ -967,7 +967,7 @@ function MobileMoreSheet({
             <button
               type="button"
               onClick={() => setLogoutConfirmOpen(true)}
-              className="w-full flex items-center gap-3 rounded-2xl px-3 py-3 text-[15px] font-semibold text-kx-danger hover:bg-kx-danger/10"
+              className="w-full flex items-center gap-3 rounded-kx px-3 py-3 text-[15px] font-semibold text-kx-danger hover:bg-kx-danger/10"
             >
               <span className="inline-flex w-9 h-9 items-center justify-center rounded-full bg-kx-danger/10 text-kx-danger">
                 <LogOut className="w-5 h-5" />

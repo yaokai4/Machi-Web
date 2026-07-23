@@ -461,7 +461,10 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
   return (
     <article
       className={clsx(
-        "kx-card cursor-pointer hover:bg-kx-card/95 hover:-translate-y-0.5 transition duration-200 relative",
+        // Calm hover (mirrors iOS KXCard): the border and resting shadow
+        // deepen slightly — no translate/opacity jump, so scrolling a long
+        // feed doesn't make the whole column shimmy.
+        "kx-card relative cursor-pointer transition-[border-color,box-shadow] duration-200 ease-out hover:border-kx-stroke/55 hover:shadow-kx-float",
         compact && "p-3",
         busyInteraction && "opacity-90",
       )}
@@ -490,9 +493,11 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-1.5">
             <div className="flex min-w-0 items-center gap-1.5">
+              {/* Name a step larger than body, meta a step smaller — the
+                  iOS card's type hierarchy reads through size, not weight. */}
               <Link
                 href={displayAuthor ? `/u/${displayAuthor.handle}` : "#"}
-                className="truncate font-semibold text-kx-text hover:underline"
+                className="truncate text-[16px] font-semibold leading-[21px] text-kx-text hover:underline"
               >
                 {displayAuthor?.display_name || t("unknown_user")}
               </Link>
@@ -591,6 +596,7 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
             onRepost={handleRepost}
             onQuote={() => (currentUser ? setQuoteOpen(true) : openAuthPrompt("generic"))}
             onComment={openPost}
+            onShare={handleShare}
             busyInteraction={busyInteraction}
           />
         </div>
@@ -749,6 +755,8 @@ function PostMetadata({ post }: { post: KXPost }) {
   );
 }
 
+type SummaryChip = { label: string; emphasis?: boolean };
+
 function TypedSummary({ post }: { post: KXPost }) {
   const { locale } = useI18n();
   const attrs = post.attributes || {};
@@ -760,7 +768,7 @@ function TypedSummary({ post }: { post: KXPost }) {
     return "";
   };
   const type = post.content_type || "dynamic";
-  const chips: string[] = [];
+  const chips: (SummaryChip | string)[] = [];
   // Respect the listing's currency when present; default to ¥ (JP-first).
   const cur = (() => {
     const code = pick("currency", "currency_code").toUpperCase();
@@ -770,8 +778,8 @@ function TypedSummary({ post }: { post: KXPost }) {
     if (code === "GBP") return "£";
     return "¥";
   })();
-  if (type === "secondhand") chips.push(pick("price") ? `${cur} ${pick("price")}` : "", pick("condition"), pick("trade_method"), pick("area"));
-  if (type === "housing") chips.push(pick("rent") ? `${cur} ${pick("rent")}` : "", pick("room_type"), pick("area"), pick("nearest_station"), pick("move_in_date"));
+  if (type === "secondhand") chips.push(pick("price") ? { label: `${cur} ${pick("price")}`, emphasis: true } : "", pick("condition"), pick("trade_method"), pick("area"));
+  if (type === "housing") chips.push(pick("rent") ? { label: `${cur} ${pick("rent")}`, emphasis: true } : "", pick("room_type"), pick("area"), pick("nearest_station"), pick("move_in_date"));
   if (type === "roommate") chips.push(pick("rent_range"), pick("area"), pick("move_in_date"));
   if (type === "job_seek") chips.push(pick("desired_job"), pick("skills"), pick("visa_status"));
   if (type === "job_post") chips.push(pick("job_title"), pick("salary"), pick("job_type"), pick("work_location"));
@@ -790,18 +798,31 @@ function TypedSummary({ post }: { post: KXPost }) {
     chips.push(formatWarningReviewStatus(pick("review_status"), locale));
   }
   if (type === "poll") return null;
-  const visible = chips.filter(Boolean).slice(0, 5);
+  const visible = chips
+    .map((chip) => (typeof chip === "string" ? { label: chip } : chip))
+    .filter((chip) => chip.label)
+    .slice(0, 5);
   if (!visible.length) return null;
-  const tint = contentTypeTint(type);
+  // One capsule per attribute — mirrors iOS CategoryChip (tint 0.095 fill,
+  // hairline 0.14 stroke). Warnings stay in the warm semantic tier; every
+  // other type reads in the single 墨绿 accent family.
+  const warm = type === "warning";
   return (
-    <div
-      className={clsx(
-        "mt-2 rounded-kx-md border px-3 py-2 text-xs font-semibold leading-5 text-kx-subtle",
-        tint.border,
-        tint.bg,
-      )}
-    >
-      {visible.join(" · ")}
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {visible.map((chip, index) => (
+        <span
+          key={`${chip.label}-${index}`}
+          className={clsx(
+            "inline-flex h-[22px] max-w-full items-center rounded-full px-2 text-[11px] leading-none ring-1 ring-inset",
+            chip.emphasis ? "font-bold" : "font-semibold",
+            warm
+              ? "bg-kx-heat/[0.095] text-kx-heat ring-kx-heat/[0.18]"
+              : "bg-kx-accent/[0.095] text-kx-accent ring-kx-accent/[0.14]",
+          )}
+        >
+          <span className="truncate">{chip.label}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -819,48 +840,13 @@ function formatWarningReviewStatus(value: string, locale: Locale) {
   return raw;
 }
 
+// Two-tier type-pill palette (mirrors iOS): one 墨绿 accent family for
+// everything, plus the warm --kx-heat tier reserved for warnings (Boost
+// already uses --kx-heat). The old six-colour Tailwind palette — and its
+// per-colour dark: patches — is gone; both themes resolve through tokens.
 function contentTypeStyle(type: string): string {
-  switch (type) {
-    case "warning":
-      return "bg-orange-50 text-orange-700 border-orange-100 dark:bg-orange-500/10 dark:text-orange-200 dark:border-orange-400/20";
-    case "guide":
-    case "secondhand":
-      return "bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-200 dark:border-emerald-400/20";
-    case "housing":
-    case "roommate":
-      return "bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-500/10 dark:text-blue-200 dark:border-blue-400/20";
-    case "question":
-      return "bg-sky-50 text-sky-700 border-sky-100 dark:bg-sky-500/10 dark:text-sky-200 dark:border-sky-400/20";
-    case "job_post":
-    case "job_seek":
-    case "referral":
-      return "bg-violet-50 text-violet-700 border-violet-100 dark:bg-violet-500/10 dark:text-violet-200 dark:border-violet-400/20";
-    case "dining":
-      return "bg-rose-50 text-rose-700 border-rose-100 dark:bg-rose-500/10 dark:text-rose-200 dark:border-rose-400/20";
-    default:
-      return "bg-kx-accentSoft text-kx-accent border-kx-accent/10";
-  }
-}
-
-function contentTypeTint(type: string): { bg: string; border: string } {
-  switch (type) {
-    case "warning":
-      return { bg: "bg-orange-50/70 dark:bg-orange-500/5", border: "border-orange-100 dark:border-orange-400/15" };
-    case "housing":
-    case "roommate":
-      return { bg: "bg-blue-50/70 dark:bg-blue-500/5", border: "border-blue-100 dark:border-blue-400/15" };
-    case "question":
-      return { bg: "bg-sky-50/70 dark:bg-sky-500/5", border: "border-sky-100 dark:border-sky-400/15" };
-    case "job_post":
-    case "job_seek":
-    case "referral":
-      return { bg: "bg-violet-50/70 dark:bg-violet-500/5", border: "border-violet-100 dark:border-violet-400/15" };
-    case "guide":
-    case "secondhand":
-      return { bg: "bg-emerald-50/70 dark:bg-emerald-500/5", border: "border-emerald-100 dark:border-emerald-400/15" };
-    default:
-      return { bg: "bg-kx-soft/70", border: "border-kx-stroke/60" };
-  }
+  if (type === "warning") return "bg-kx-heat/10 text-kx-heat ring-1 ring-inset ring-kx-heat/20";
+  return "bg-kx-accentSoft/80 text-kx-accent ring-1 ring-inset ring-kx-accent/15";
 }
 
 function PostPoll({ post, onVoted }: { post: KXPost; onVoted?: (post: KXPost) => void }) {
@@ -1245,6 +1231,7 @@ function InteractionBar({
   onRepost,
   onQuote,
   onComment,
+  onShare,
   busyInteraction,
 }: {
   post: KXPost;
@@ -1253,6 +1240,7 @@ function InteractionBar({
   onRepost: (mode: "repost" | "undo") => void;
   onQuote: () => void;
   onComment: () => void;
+  onShare: () => void;
   busyInteraction?: BusyInteraction;
 }) {
   const { t, locale } = useI18n();
@@ -1277,7 +1265,10 @@ function InteractionBar({
   }, [repostMenu]);
 
   return (
-    <div className="mt-3 grid max-w-sm grid-cols-4 items-center gap-1 text-kx-subtle">
+    // Five keys spread across the card (comment / repost / like / bookmark /
+    // share) — full-width justify-between on mobile, capped at max-w-md on
+    // desktop. -ml-2 optically aligns the first icon with the text column.
+    <div className="-ml-2 mt-2.5 flex items-center justify-between gap-0.5 text-kx-subtle sm:max-w-md">
       <button
         className="kx-metric"
         onClick={(e) => {
@@ -1355,6 +1346,17 @@ function InteractionBar({
         aria-pressed={!!post.bookmarked}
       >
         <Bookmark className={clsx("w-4 h-4", post.bookmarked && "fill-kx-bookmark")} /> {compactNumber(post.bookmark_count)}
+      </button>
+      <button
+        className="kx-metric"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onShare();
+        }}
+        aria-label={t("action_share")}
+      >
+        <Share2 className="w-4 h-4" />
       </button>
     </div>
   );

@@ -117,7 +117,7 @@ export function RegionPickerDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1000] flex items-end justify-center bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      className="fixed inset-0 z-[1000] flex items-end justify-center bg-kx-text/35 p-0 backdrop-blur-sm sm:items-center sm:p-4"
       onMouseDown={onClose}
       role="dialog"
       aria-modal="true"

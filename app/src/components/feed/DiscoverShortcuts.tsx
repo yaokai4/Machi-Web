@@ -76,7 +76,7 @@ export function DiscoverShortcutGrid({
       <section className="kx-discover-panel">
         <div className="kx-discover-panel-header">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-[17px] font-extrabold text-kx-text/90">{copy.title}</h2>
+            <h2 className="text-[17px] font-bold text-kx-text">{copy.title}</h2>
             <button
               data-explore-all-channels
               type="button"
@@ -86,7 +86,7 @@ export function DiscoverShortcutGrid({
                 event.stopPropagation();
                 setIsChannelDialogOpen(true);
               }}
-              className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-accentSoft/70 px-3 text-xs font-black text-kx-accent shadow-[0_10px_28px_-20px_rgba(20,112,103,0.45)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft"
+              className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-accentSoft/70 px-3 text-xs font-bold text-kx-accent shadow-[0_10px_28px_-20px_rgb(var(--kx-accent)/0.4)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft"
             >
               <Sparkles className="h-3.5 w-3.5" />
               {copy.more}
@@ -218,7 +218,7 @@ function AllChannelDialog({
       />
       <section
         ref={sheetRef}
-        className="absolute inset-x-0 bottom-0 max-h-[75dvh] overflow-hidden rounded-t-kx-sheet bg-kx-card text-kx-text shadow-[0_32px_80px_rgba(15,23,42,0.22)] md:left-1/2 md:top-1/2 md:bottom-auto md:w-[min(820px,calc(100vw-48px))] md:max-h-[calc(100vh-120px)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-kx-sheet"
+        className="absolute inset-x-0 bottom-0 max-h-[75dvh] overflow-hidden rounded-t-kx-sheet bg-kx-card text-kx-text shadow-[0_32px_80px_rgb(var(--kx-shadow)/0.25)] md:left-1/2 md:top-1/2 md:bottom-auto md:w-[min(820px,calc(100vw-48px))] md:max-h-[calc(100vh-120px)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-kx-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="all-channel-title"
@@ -251,8 +251,8 @@ function AllChannelDialog({
                     const Icon = item.Icon || spec.Icon;
                     const slug = item.channel;
                     const itemClass = [
-                      "group flex min-h-14 items-center gap-3 rounded-kx-md border px-3 py-2.5 text-left transition-all duration-200 ease-out",
-                      "hover:-translate-y-px hover:bg-kx-soft/70 hover:shadow-[0_12px_40px_rgba(15,23,42,0.07)]",
+                      "group flex min-h-14 items-center gap-3 rounded-kx-md border px-3 py-2.5 text-left transition-[border-color,background-color] duration-200 ease-out",
+                      "hover:border-kx-accent/30 hover:bg-kx-accentSoft/40",
                       selectedChannel === slug ? "border-kx-accent/35 bg-kx-accentSoft/70" : "border-kx-stroke/45 bg-kx-card/80",
                     ].join(" ");
                     const itemContent = (
@@ -364,52 +364,28 @@ function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec;
     <>
       <ChannelIcon spec={spec} size="lg" />
       <span className="relative min-w-0 w-full flex-1">
-        <span className="line-clamp-2 break-words text-[15px] font-extrabold leading-snug text-kx-text/90">{title || spec.title}</span>
+        <span className="line-clamp-2 break-words text-[15px] font-bold leading-snug text-kx-text">{title || spec.title}</span>
         <span className="mt-1 line-clamp-2 break-words text-xs leading-5 text-kx-subtle">{subtitle || spec.subtitle}</span>
       </span>
-      <span className="relative mt-0.5 hidden h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-accent group-hover:text-white sm:grid">
+      <span className="relative mt-0.5 hidden h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-accent group-hover:text-kx-onAccent sm:grid">
         <ChevronRight className="h-4 w-4" />
       </span>
     </>
   );
 }
 
-function channelHeroClass(channel: ExploreChannelSlug, active?: boolean) {
-  // Light: a bright pastel gradient. Dark: the light `via-white` stop reads as
-  // a near-white card that swallows the near-white text tokens (text-kx-text/90
-  // / text-kx-subtle) — contrast collapses to ~1–2:1. So each channel also
-  // ships a dark: gradient that flips the mid-stop to the semantic card surface
-  // (kx-card) and keeps only a faint color tint at the corners, so the
-  // near-white text stays legible in dark mode.
-  const accent = {
-    market:
-      "from-emerald-50/90 via-white to-teal-50/90 hover:border-emerald-300/70 dark:from-emerald-500/12 dark:via-kx-card dark:to-teal-500/12 dark:hover:border-emerald-400/45",
-    housing:
-      "from-indigo-50/90 via-white to-sky-50/90 hover:border-indigo-300/70 dark:from-indigo-500/12 dark:via-kx-card dark:to-sky-500/12 dark:hover:border-indigo-400/45",
-    jobs:
-      "from-violet-50/90 via-white to-fuchsia-50/80 hover:border-violet-300/70 dark:from-violet-500/12 dark:via-kx-card dark:to-fuchsia-500/12 dark:hover:border-violet-400/45",
-    services:
-      "from-orange-50/95 via-white to-rose-50/80 hover:border-orange-300/70 dark:from-orange-500/12 dark:via-kx-card dark:to-rose-500/12 dark:hover:border-orange-400/45",
-    guide:
-      "from-emerald-50/80 via-white to-white hover:border-emerald-300/60 dark:from-emerald-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-emerald-400/40",
-    news:
-      "from-blue-50/80 via-white to-white hover:border-blue-300/60 dark:from-blue-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-blue-400/40",
-    deals:
-      "from-rose-50/80 via-white to-white hover:border-rose-300/60 dark:from-rose-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-rose-400/40",
-    groups:
-      "from-fuchsia-50/80 via-white to-white hover:border-fuchsia-300/60 dark:from-fuchsia-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-fuchsia-400/40",
-    qa:
-      "from-blue-50/80 via-white to-white hover:border-blue-300/60 dark:from-blue-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-blue-400/40",
-  } satisfies Record<ExploreChannelSlug, string>;
+function channelHeroClass(_channel: ExploreChannelSlug, active?: boolean) {
+  // One quiet card language for every channel (mirrors iOS KXCard): flat
+  // warm-white surface, hairline stroke, soft resting shadow. The old
+  // per-channel pastel gradients + white glow blob + hover lift are gone —
+  // hover only deepens the border and washes in the 墨绿 accent-soft tint,
+  // and both themes resolve through tokens (no dark: patches).
   return [
-    "group relative flex min-h-[112px] min-w-0 flex-row items-center gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:gap-3.5 sm:p-3.5",
-    "bg-gradient-to-br shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
-    // The soft top-right glow is a bright white blob in light mode; dim it in
-    // dark so it doesn't punch a hot spot through the dark card.
-    "before:absolute before:-right-12 before:-top-14 before:h-28 before:w-28 before:rounded-full before:bg-white/45 before:blur-2xl before:content-[''] dark:before:bg-white/[0.04]",
-    "hover:-translate-y-0.5 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
-    accent[channel],
-    active ? "border-kx-accent/45 bg-kx-accentSoft/60 ring-2 ring-kx-accent/20" : "border-kx-stroke/45",
+    "group relative flex min-h-[104px] min-w-0 flex-row items-center gap-3 rounded-kx-lg border p-3 text-left sm:gap-3.5 sm:p-3.5",
+    "bg-kx-card shadow-[0_1px_2px_rgb(var(--kx-shadow)/0.04),0_12px_34px_-28px_rgb(var(--kx-shadow)/0.28)]",
+    "transition-[border-color,background-color,box-shadow] duration-200 ease-out",
+    "hover:border-kx-accent/35 hover:bg-kx-accentSoft/40 hover:shadow-kx-float",
+    active ? "border-kx-accent/50 bg-kx-accentSoft/60 ring-2 ring-kx-accent/20" : "border-kx-stroke/45",
   ].join(" ");
 }
 
@@ -421,9 +397,8 @@ function secondaryChipClass(active?: boolean) {
 }
 
 function ChannelIcon({ spec, size = "md" }: { spec: ExploreChannelSpec; size?: "sm" | "md" | "lg" }) {
-  // Large hero tiles use a vibrant, solid-filled icon (white glyph + soft
-  // colored shadow) so the city entrances read as premium app launchers
-  // rather than flat tinted chips. Smaller sizes keep the light tint.
+  // Hero tiles get a slightly stronger accent-soft chip; smaller sizes use
+  // the lighter 0.095 tint. Same single accent family at every size.
   const classes = size === "lg" ? solidToneClass(spec.tone) : toneClass(spec.tone);
   const box = size === "lg" ? "h-12 w-12 rounded-[18px]" : size === "sm" ? "h-8 w-8 rounded-xl" : "h-9 w-9 rounded-xl";
   const icon = size === "lg" ? "h-6 w-6" : size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
@@ -434,50 +409,14 @@ function ChannelIcon({ spec, size = "md" }: { spec: ExploreChannelSpec; size?: "
   );
 }
 
-// Vibrant, solid-filled icon backgrounds for the large city-entrance tiles —
-// a saturated gradient + matching soft shadow, with a white glyph on top.
-function solidToneClass(tone: ExploreChannelSpec["tone"]) {
-  switch (tone) {
-    case "blue":
-      return "bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-[0_12px_26px_-12px_rgba(37,99,235,0.65)]";
-    case "emerald":
-      return "bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-[0_12px_26px_-12px_rgba(16,185,129,0.6)]";
-    case "indigo":
-      return "bg-gradient-to-br from-indigo-500 to-indigo-600 text-white shadow-[0_12px_26px_-12px_rgba(99,102,241,0.65)]";
-    case "violet":
-      return "bg-gradient-to-br from-violet-500 to-violet-600 text-white shadow-[0_12px_26px_-12px_rgba(139,92,246,0.65)]";
-    case "teal":
-      return "bg-gradient-to-br from-teal-500 to-teal-600 text-white shadow-[0_12px_26px_-12px_rgba(20,184,166,0.6)]";
-    case "rose":
-      return "bg-gradient-to-br from-rose-500 to-rose-600 text-white shadow-[0_12px_26px_-12px_rgba(244,63,94,0.6)]";
-    case "orange":
-      return "bg-gradient-to-br from-orange-400 to-orange-500 text-white shadow-[0_12px_26px_-12px_rgba(249,115,22,0.6)]";
-    case "fuchsia":
-      return "bg-gradient-to-br from-fuchsia-500 to-fuchsia-600 text-white shadow-[0_12px_26px_-12px_rgba(217,70,239,0.6)]";
-    default:
-      return "bg-gradient-to-br from-slate-500 to-slate-600 text-white shadow-[0_12px_26px_-12px_rgba(71,85,105,0.55)]";
-  }
+// Icon chips read in a single 墨绿 accent family (mirrors iOS CategoryChip:
+// soft accent tint + hairline stroke). The per-tone saturated gradients and
+// their hardcoded rgba shadows are gone — hierarchy comes from chip size,
+// not from eight competing hues.
+function solidToneClass(_tone: ExploreChannelSpec["tone"]) {
+  return "bg-kx-accentSoft text-kx-accent ring-1 ring-inset ring-kx-accent/[0.16] shadow-[0_10px_24px_-16px_rgb(var(--kx-accent)/0.45)]";
 }
 
-function toneClass(tone: ExploreChannelSpec["tone"]) {
-  switch (tone) {
-    case "blue":
-      return "bg-blue-600/10 text-blue-600";
-    case "emerald":
-      return "bg-emerald-600/10 text-emerald-600";
-    case "indigo":
-      return "bg-indigo-600/10 text-indigo-600";
-    case "violet":
-      return "bg-violet-600/10 text-violet-600";
-    case "teal":
-      return "bg-teal-600/10 text-teal-600";
-    case "rose":
-      return "bg-rose-600/10 text-rose-600";
-    case "orange":
-      return "bg-orange-500/10 text-orange-600";
-    case "fuchsia":
-      return "bg-fuchsia-600/10 text-fuchsia-600";
-    default:
-      return "bg-kx-soft text-kx-subtle";
-  }
+function toneClass(_tone: ExploreChannelSpec["tone"]) {
+  return "bg-kx-accent/[0.095] text-kx-accent ring-1 ring-inset ring-kx-accent/[0.14]";
 }
