@@ -502,3 +502,218 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
     return {"installed": True, "skipped": False,
             "questions": imported["total"], "exams": exams,
             "fingerprint": fingerprint}
+
+
+# ── jlptv2 题库（data/jlpt_bank_v2.json）─────────────────────────────────────
+# v2 走的是可信流水线：多模型生成 → 双人独立盲审收据 → Ed25519 签名发布 →
+# assemble_bank_v2 组卷。与 v1 的关键差异：
+#   * 每级**多套**全真卷（papers[level] 是数组），外加一个大练习池；
+#   * 解析是四段结构化对象，由 server_jlpt.explanation_storage_value 存成 JSON；
+#   * 独立的 source / id 前缀 / 指纹哨兵，装载 v2 **不会**动 v1 的任何一行。
+# v1 与 v2 可以并存：v1 是既有线上内容，v2 上线后由运营决定是否归档 v1。
+
+_V2_BANK_FILENAME = "jlpt_bank_v2.json"
+_V2_SOURCE = "jlptv2"
+_V2_SENTINEL_ID = "jlptv2-bank-fingerprint"
+
+
+def _v2_bank_path() -> str:
+    import os
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", _V2_BANK_FILENAME)
+
+
+def _v2_paper_exam_payloads(
+    level: str, paper: dict[str, Any], *, sort_order: int, coin_cost: int
+) -> list[dict[str, Any]]:
+    """One v2 paper manifest → untimed parent + independently timed children.
+
+    Mirrors the v1 contract (`_mock_paper_exam_payloads`) so the runtime, the
+    clients and the paper-attempt machinery need no v2-specific branch: only the
+    first section carries the price; parent and remaining sections are free.
+    """
+    normalized_level = str(level).strip().upper()
+    parent_id = str(paper.get("id") or "").strip()
+    if not parent_id:
+        raise ValueError(f"{normalized_level}: v2 paper manifest requires an id")
+    if paper.get("manifestVersion") != 2 or paper.get("kind") != "full-paper":
+        raise ValueError(f"{parent_id}: v2 paper requires kind=full-paper manifestVersion=2")
+
+    expected_names = _FULL_PAPER_SECTION_NAMES.get(normalized_level)
+    if not expected_names:
+        raise ValueError(f"{normalized_level}: unsupported full-paper level")
+    raw_sections = paper.get("sections")
+    if not isinstance(raw_sections, list) or len(raw_sections) != len(expected_names):
+        raise ValueError(
+            f"{parent_id}: full-paper requires sections " + ", ".join(expected_names)
+        )
+
+    question_ids = [str(v).strip() for v in (paper.get("questionIds") or []) if str(v).strip()]
+    if not question_ids:
+        raise ValueError(f"{parent_id}: questionIds must not be empty")
+
+    normalized_sections = []
+    for index, expected_name in enumerate(expected_names):
+        raw_section = raw_sections[index]
+        if not isinstance(raw_section, dict) or raw_section.get("section") != expected_name:
+            raise ValueError(f"{parent_id}: section {index} must be {expected_name}")
+        section_ids = [
+            str(v).strip() for v in (raw_section.get("questionIds") or []) if str(v).strip()
+        ]
+        duration = raw_section.get("durationSeconds")
+        if not section_ids:
+            raise ValueError(f"{parent_id} {expected_name}: questionIds must not be empty")
+        if type(duration) is not int or duration <= 0:
+            raise ValueError(f"{parent_id} {expected_name}: durationSeconds must be positive")
+        normalized_sections.append((expected_name, raw_section, section_ids, duration))
+
+    flattened = [qid for _, _, ids, _ in normalized_sections for qid in ids]
+    if flattened != question_ids:
+        raise ValueError(f"{parent_id}: questionIds must equal ordered section questionIds")
+    if len(set(flattened)) != len(flattened):
+        raise ValueError(f"{parent_id}: questionIds must be unique")
+    total_duration = sum(duration for _, _, _, duration in normalized_sections)
+    if paper.get("durationSeconds") != total_duration:
+        raise ValueError(f"{parent_id}: durationSeconds must equal section durations")
+
+    title = str(paper.get("title") or f"JLPT {normalized_level} 全真模拟")
+    payloads = [
+        {
+            "id": parent_id,
+            "level": normalized_level,
+            "title": title,
+            "kind": "paper",
+            "durationSeconds": 0,
+            "questionCount": len(question_ids),
+            "passScore": 60,
+            "scoreMode": "percent",
+            "coinCost": 0,
+            "isMemberOnly": False,
+            "status": "published",
+            "sortOrder": sort_order,
+            "questionIds": [],
+        }
+    ]
+    for section_order, (section_name, raw_section, section_ids, duration) in enumerate(
+        normalized_sections
+    ):
+        section_title = str(raw_section.get("title") or _FULL_PAPER_SECTION_TITLES[section_name])
+        payloads.append(
+            {
+                "id": f"{parent_id}-{section_name}",
+                "level": normalized_level,
+                "title": f"{title} · {section_title}",
+                "kind": "section",
+                "section": (section_name if section_name in ("vocab", "listening") else ""),
+                "durationSeconds": duration,
+                "passScore": 60,
+                "scoreMode": "jlpt_scaled" if section_name == "written" else "percent",
+                "coinCost": coin_cost if section_order == 0 else 0,
+                "isMemberOnly": False,
+                "status": "published",
+                "sortOrder": section_order,
+                "parentExamId": parent_id,
+                "questionIds": section_ids,
+            }
+        )
+    return payloads
+
+
+def ensure_jlpt_bank_v2(conn: Any) -> dict[str, Any]:
+    """Idempotently install the jlptv2 bank + its multi-paper manifests.
+
+    No-ops quietly when the bank file is absent, exactly like the v1 loader —
+    a checkout without the (large) data file must still boot. Idempotency is
+    keyed on the file's sha256 fingerprint, not on row counts, so re-running
+    after a content fix actually reinstalls."""
+    import os
+
+    import server_jlpt as jlpt
+
+    path = _v2_bank_path()
+    if not os.path.exists(path):
+        return {"installed": False, "reason": "bank file missing"}
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        bank = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {"installed": False, "reason": "bank file unreadable"}
+    if bank.get("source") != _V2_SOURCE:
+        return {"installed": False, "reason": "bank source is not jlptv2"}
+    questions = bank.get("questions") or []
+    papers = bank.get("papers") or {}
+    if not questions:
+        return {"installed": False, "reason": "bank file empty"}
+
+    now = _now()
+    fingerprint = _bank_fingerprint(raw)
+    row = conn.execute(
+        "SELECT tags FROM jlpt_questions WHERE id = ?", (_V2_SENTINEL_ID,)
+    ).fetchone()
+    if row is not None and str(dict(row).get("tags") or "") == fingerprint:
+        return {"installed": True, "skipped": True, "fingerprint": fingerprint}
+
+    items = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        items.append({
+            "id": q.get("id"),
+            "level": q.get("level"),
+            "section": q.get("section"),
+            "questionType": q.get("qtype") or "single",
+            "stem": q.get("stem"),
+            "passage": q.get("passage") or "",
+            "choices": q.get("choices"),
+            "answerIndex": q.get("answerIndex"),
+            # dict → server_jlpt 存成 JSON，读取时还原结构化并渲染纯文本兜底。
+            "explanation": q.get("explanation"),
+            "difficulty": q.get("difficulty") or 3,
+            "tags": q.get("tags") or "",
+            "source": _V2_SOURCE,
+            "sortOrder": q.get("sortOrder") or 0,
+        })
+    imported = {"total": 0}
+    for i in range(0, len(items), jlpt.IMPORT_MAX_ROWS):
+        result = jlpt.import_questions(conn, items[i:i + jlpt.IMPORT_MAX_ROWS], now=now)
+        imported["total"] += result["total"]
+
+    exams = 0
+    sort_base = 0
+    for level in sorted(papers):
+        level_papers = papers[level]
+        if not isinstance(level_papers, list):
+            raise ValueError(f"{level}: v2 papers must be a list of manifests")
+        coin_cost = _MOCK_COIN_COST_BY_LEVEL.get(str(level).upper(), 0)
+        for paper in level_papers:
+            payloads = _v2_paper_exam_payloads(
+                level, paper, sort_order=sort_base, coin_cost=coin_cost
+            )
+            sort_base += 1
+            # 已存在的收费子科目保留管理员改过的价；其余行按清单显式定价。
+            charging_id = payloads[1]["id"] if len(payloads) > 1 else ""
+            if charging_id:
+                existing = conn.execute(
+                    "SELECT coin_cost FROM jlpt_exams WHERE id = ?", (charging_id,)
+                ).fetchone()
+                if existing:
+                    payloads[1]["coinCost"] = int(dict(existing).get("coin_cost") or 0)
+            for payload in payloads:
+                jlpt.upsert_exam(conn, payload, now=now)
+                exams += 1
+
+    conn.execute(
+        "INSERT INTO jlpt_questions (id, level, section, question_type, stem, passage, "
+        "audio_media_id, choices_json, answer_index, explanation, difficulty, tags, "
+        "is_member_only, source, review_status, status, sort_order, created_at, updated_at) "
+        "VALUES (?, 'N5', 'vocab', 'sentinel', ?, '', '', '[]', 0, '', 3, ?, 0, ?, "
+        "'approved', 'archived', 0, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET tags = ?, updated_at = ?",
+        (_V2_SENTINEL_ID, "v2 bank fingerprint sentinel — not a question", fingerprint,
+         _V2_SOURCE, now, now, fingerprint, now),
+    )
+
+    return {"installed": True, "skipped": False,
+            "questions": imported["total"], "exams": exams,
+            "papers": {level: len(papers[level]) for level in papers},
+            "fingerprint": fingerprint}

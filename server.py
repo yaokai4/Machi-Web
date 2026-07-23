@@ -7566,6 +7566,10 @@ def init_db() -> None:
         # 全真模考题库 v1(data/jlpt_bank_v1.json):题目 upsert + 固定整卷 +
         # JLPT 缩放出分。文件不存在时静默跳过,不阻塞启动。
         jlpt_seed.ensure_jlpt_mock_v1(conn)
+        # 全真模考题库 v2(data/jlpt_bank_v2.json):走可信流水线(双人盲审收据 +
+        # Ed25519 签名发布 + assemble_bank_v2 组卷)的产物,每级多套全真卷 + 练习
+        # 池,解析为四段结构化对象。与 v1 并存、互不覆盖;文件不存在时静默跳过。
+        jlpt_seed.ensure_jlpt_bank_v2(conn)
         # B2-1: 推荐位静态 slug 与商品表核对，悬空/未发布引用启动即告警。
         _guide_audit_recommended_slugs(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
@@ -21633,11 +21637,22 @@ class Handler(BaseHTTPRequestHandler):
         if outcome.get("status") == "no_questions":
             return self.send_error_json("该模考暂无可用题目。", 409, "no_questions")
         if outcome.get("status") == "insufficient":
+            # 差额必须同时进 detail：顶层键是 Web 端的既有契约，而 iOS 的
+            # KaiXAPIError 只解 error.detail，只放顶层会让客户端拿不到「还差
+            # 多少币」，只能弹一句通用的「余额不足」。两处都写，纯加性。
+            required_coins = int(outcome.get("requiredCoins") or 0)
+            balance = int(outcome.get("balance") or 0)
             env = self._error_envelope(
-                "EXAM_INSUFFICIENT_COINS", "Machi 币不足，充值后即可开考。"
+                "EXAM_INSUFFICIENT_COINS",
+                "Machi 币不足，充值后即可开考。",
+                {
+                    "requiredCoins": required_coins,
+                    "balance": balance,
+                    "shortfallCoins": max(0, required_coins - balance),
+                },
             )
-            env["requiredCoins"] = int(outcome.get("requiredCoins") or 0)
-            env["balance"] = int(outcome.get("balance") or 0)
+            env["requiredCoins"] = required_coins
+            env["balance"] = balance
             return self.send_json(env, 402)
         if outcome.get("status") == "price_changed":
             return self.send_error_json(

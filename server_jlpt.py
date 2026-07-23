@@ -405,6 +405,77 @@ def _loads_choices(raw: Any) -> list[str]:
     return [str(x) for x in data][:8]
 
 
+# ── 结构化解析（jlptv2 四段式）───────────────────────────────────────────────
+# v1 题库的 explanation 是一段自由文本；jlptv2 契约要求四段结构化对象（题意用法 /
+# 知识点 / 正确项成立理由 / 三个干扰项逐项理由）。两者共用同一个 TEXT 列：结构化
+# 的以 JSON 存，读取时还原成对象，同时**始终**渲染一份等价纯文本，好让旧客户端和
+# 任何只读 explanation 字段的地方保持可用（不给旧端发空解析）。
+
+_EXPLANATION_PART_LABELS = (
+    ("correctAnswerMeaningUsage", "词义与用法"),
+    ("knowledgePoint", "知识点"),
+    ("whyCorrect", "为什么选它"),
+)
+
+
+def _explanation_detail(raw: Any) -> Optional[dict[str, Any]]:
+    """Parse a stored explanation into the structured v2 shape, else None."""
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str) and raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+    else:
+        return None
+    if not isinstance(data, dict):
+        return None
+    reasons = data.get("distractorReasons")
+    if not isinstance(reasons, list) or not reasons:
+        return None
+    normalized_reasons = []
+    for item in reasons:
+        if not isinstance(item, dict):
+            return None
+        choice = str(item.get("choice") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not choice or not reason:
+            return None
+        normalized_reasons.append({"choice": choice, "reason": reason})
+    detail = {key: str(data.get(key) or "").strip() for key, _ in _EXPLANATION_PART_LABELS}
+    if not all(detail.values()):
+        return None
+    detail["distractorReasons"] = normalized_reasons
+    return detail
+
+
+def _explanation_plain_text(detail: dict[str, Any]) -> str:
+    """Render the structured explanation as the legacy flat string."""
+    lines = [f"{label}：{detail[key]}" for key, label in _EXPLANATION_PART_LABELS]
+    lines.append("其他选项为什么不对：")
+    lines.extend(
+        f"・{item['choice']}——{item['reason']}" for item in detail["distractorReasons"]
+    )
+    return "\n".join(lines)
+
+
+def explanation_storage_value(raw: Any) -> str:
+    """Column value for an incoming explanation (structured → compact JSON)."""
+    detail = _explanation_detail(raw)
+    if detail is not None:
+        return json.dumps(detail, ensure_ascii=False)[:8000]
+    return str(raw or "")[:4000]
+
+
+def public_explanation(raw: Any) -> tuple[str, Optional[dict[str, Any]]]:
+    """(flat text for every client, structured detail for v2-aware clients)."""
+    detail = _explanation_detail(raw)
+    if detail is None:
+        return str(raw or ""), None
+    return _explanation_plain_text(detail), detail
+
+
 # ── question serialization ───────────────────────────────────────────────────
 
 def public_question(
@@ -446,7 +517,12 @@ def public_question(
     }
     if reveal_answer:
         out["answerIndex"] = int(d.get("answer_index") or 0)
-        out["explanation"] = d.get("explanation") or ""
+        # 结构化解析额外给一个 explanationDetail；explanation 始终是可读纯文本，
+        # 旧客户端无需改动即可继续渲染。
+        flat, detail = public_explanation(d.get("explanation"))
+        out["explanation"] = flat
+        if detail is not None:
+            out["explanationDetail"] = detail
     return out
 
 
@@ -2104,7 +2180,7 @@ def import_questions(conn: Any, items: list[dict[str, Any]], *, now: Optional[st
             str(raw.get("audioMediaId") or raw.get("audio_media_id") or "")[:128],
             json.dumps([str(c) for c in choices][:8], ensure_ascii=False),
             answer_index,
-            str(raw.get("explanation") or "")[:4000],
+            explanation_storage_value(raw.get("explanation")),
             _clamp(raw.get("difficulty"), 3, 1, 5),
             str(raw.get("tags") or "")[:256],
             1 if raw.get("isMemberOnly") or raw.get("is_member_only") else 0,
