@@ -38,7 +38,12 @@ def _dedupe_key(question: dict) -> str:
     )
 
 
-def harvest(transcript_dir: Path, level: str, group_qtypes: set[str]) -> tuple[list[dict], dict]:
+def harvest(
+    transcript_dir: Path,
+    level: str,
+    group_qtypes: set[str],
+    section_of: dict[str, str],
+) -> tuple[list[dict], dict]:
     seen: set[str] = set()
     pool: list[dict] = []
     stats = {"agentFiles": 0, "agentsWithOutput": 0, "rawQuestions": 0, "skippedWrongLevel": 0}
@@ -74,7 +79,13 @@ def harvest(transcript_dir: Path, level: str, group_qtypes: set[str]) -> tuple[l
                 continue
             seen.add(key)
             record = dict(question)
+            # 生成 agent 只吐 qtype，`section` / `level` 是工作流 sanitize() 事后
+            # 按契约补的。这里做同样的机械补全——映射来自契约、不是猜测，也不改
+            # 任何题目内容；缺 passage/group 的按契约补空串。
             record["level"] = level
+            record["section"] = section_of[record["qtype"]]
+            record.setdefault("passage", "")
+            record.setdefault("group", "")
             pool.append(record)
     stats["uniqueKept"] = len(pool)
     stats["listening"] = sum(1 for q in pool if str(q.get("qtype", "")).startswith(_LISTEN_PREFIX))
@@ -94,13 +105,14 @@ def main() -> int:
 
     contract = load_contract()
     group_qtypes = set(contract["generationGroups"][args.group])
+    section_of = {qtype: spec["section"] for qtype, spec in contract["qtypes"].items()}
 
     transcript_dir = Path(args.transcript_dir).expanduser()
     if not transcript_dir.is_dir():
         print(json.dumps({"status": "failed", "message": f"{transcript_dir} 不是目录"}, ensure_ascii=False), file=sys.stderr)
         return 2
 
-    pool, stats = harvest(transcript_dir, args.level, group_qtypes)
+    pool, stats = harvest(transcript_dir, args.level, group_qtypes, section_of)
     if not pool:
         print(json.dumps({"status": "failed", "message": "没有回收到任何题目", "stats": stats}, ensure_ascii=False), file=sys.stderr)
         return 2
