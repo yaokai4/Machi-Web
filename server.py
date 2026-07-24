@@ -587,6 +587,27 @@ DB_LOCK = _BackendAwareDBLock()
 DB_WRITE_LOCK_TIMEOUT_SEC = float(_env("KAIX_DB_WRITE_LOCK_TIMEOUT_SEC", "20"))
 
 
+def _is_retryable_db_error(exc: BaseException) -> bool:
+    """True for transient, client-retryable DB conditions — a PostgreSQL
+    statement_timeout / lock_timeout / deadlock, or a SQLite 'database is
+    locked'. These surface (wrapped as sqlite3.OperationalError by _PgConn)
+    when writes contend under load; they are NOT application faults. The
+    request layer answers 503 (retry) instead of 500 for them and keeps them
+    out of the ERROR email digest, and best-effort background jobs treat them
+    as a skipped-cycle WARNING rather than a paging ERROR."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return (
+        "statement timeout" in msg
+        or "lock timeout" in msg
+        or "canceling statement" in msg
+        or "deadlock detected" in msg
+        or "database is locked" in msg
+        or "could not obtain lock" in msg
+    )
+
+
 class _DBLockReleased:
     """Temporarily drop the global write lock around slow I/O (e.g. a network
     crawl) so it doesn't block every other writer. Safe from a write handler
@@ -1626,6 +1647,15 @@ _MACHI_AI_INFLIGHT = threading.BoundedSemaphore(MACHI_AI_MAX_INFLIGHT)
 # instead of pinning them forever (the real "request timeout" for a DB-bound
 # request). 0 disables. Generous default — only kills genuinely stuck queries.
 KAIX_PG_STATEMENT_TIMEOUT_MS = max(0, int(_env("KAIX_PG_STATEMENT_TIMEOUT_MS", "15000")))
+# Cap how long a write may WAIT on a row lock before failing fast. Without it a
+# write blocked behind a slow holder waits the full statement_timeout (15s),
+# tying up a pool connection the whole time — a handful of these under load
+# exhausts the pool and the stall cascades. A lock_timeout turns that into a
+# quick, retryable error (surfaced as 503 by _is_retryable_db_error) so the
+# connection frees immediately. Normal writes hold locks for milliseconds, so a
+# multi-second cap effectively only fires on genuine pile-ups. Default 0 keeps
+# the historical behaviour; set e.g. 5000 (5s) in prod to stop cascades.
+KAIX_PG_LOCK_TIMEOUT_MS = max(0, int(_env("KAIX_PG_LOCK_TIMEOUT_MS", "0")))
 
 
 class _PgPool:
@@ -1665,10 +1695,13 @@ class _PgPool:
                     pass
             raw = psycopg2.connect(self._dsn or "dbname=machi_dev")
             raw.autocommit = True  # mirror sqlite isolation_level=None
-            if KAIX_PG_STATEMENT_TIMEOUT_MS > 0:
+            if KAIX_PG_STATEMENT_TIMEOUT_MS > 0 or KAIX_PG_LOCK_TIMEOUT_MS > 0:
                 try:
                     cur = raw.cursor()
-                    cur.execute("SET statement_timeout = %s", (KAIX_PG_STATEMENT_TIMEOUT_MS,))
+                    if KAIX_PG_STATEMENT_TIMEOUT_MS > 0:
+                        cur.execute("SET statement_timeout = %s", (KAIX_PG_STATEMENT_TIMEOUT_MS,))
+                    if KAIX_PG_LOCK_TIMEOUT_MS > 0:
+                        cur.execute("SET lock_timeout = %s", (KAIX_PG_LOCK_TIMEOUT_MS,))
                     cur.close()
                 except Exception:
                     pass
@@ -1843,6 +1876,26 @@ class _PgConn:
             self._give_back()
         except Exception:
             pass
+
+    def set_session_timeouts(self, statement_ms: int, lock_ms: int) -> None:
+        """Set statement_timeout / lock_timeout on the RAW connection (bypasses
+        _pg_xlate). Lets a background job run under a tighter budget than the
+        pooled default so it can never HOLD row locks — nor WAIT on a hot row —
+        long enough to 500 a foreground write. The caller MUST reset these
+        before the connection re-enters the pool (pool release only rollbacks;
+        it does not clear a session GUC), or call discard()."""
+        cur = self._raw().cursor()
+        try:
+            cur.execute("SET statement_timeout = %s", (int(statement_ms),))
+            cur.execute("SET lock_timeout = %s", (int(lock_ms),))
+        finally:
+            cur.close()
+
+    def discard(self) -> None:
+        """Return this connection to the pool as discarded (physically closed).
+        Use when its session state (e.g. an un-reset timeout GUC) can no longer
+        be trusted for reuse."""
+        self._give_back(discard=True)
 
     def __enter__(self):
         return self
@@ -18254,6 +18307,15 @@ def start_retention_janitor() -> None:
 # ---------------------------------------------------------------------------
 KAIX_HOT_SCORE_INTERVAL_SEC = max(30, int(_env("KAIX_HOT_SCORE_INTERVAL_SEC", "60")))
 KAIX_HOT_SCORE_WINDOW_DAYS = max(1, int(_env("KAIX_HOT_SCORE_WINDOW_DAYS", "10")))
+# The refresher's big UPDATE runs (on PostgreSQL) concurrently with foreground
+# post writes — a like/comment counter bump shares the row of the very posts it
+# rescores. Under the pooled default 15s statement_timeout it could HOLD those
+# row locks (or WAIT on a perpetually-hot viral row) long enough to push a
+# foreground write past ITS timeout → 500. Give the background pass a tighter,
+# self-imposed budget so it always yields fast: it is best-effort and simply
+# retries on the next cadence. 0 = fall back to the pooled default.
+KAIX_HOT_SCORE_STATEMENT_TIMEOUT_MS = max(0, int(_env("KAIX_HOT_SCORE_STATEMENT_TIMEOUT_MS", "8000")))
+KAIX_HOT_SCORE_LOCK_TIMEOUT_MS = max(0, int(_env("KAIX_HOT_SCORE_LOCK_TIMEOUT_MS", "4000")))
 HOT_SCORE_DECAY_H = 48.0          # engagement value halves ~every 48h of age
 HOT_SCORE_FRESH_WINDOW_H = 12.0   # new-post visibility bonus fades over 12h
 HOT_SCORE_FRESH_PEAK = 30.0       # peak freshness bonus (~30 like-points) for a brand-new post
@@ -18728,12 +18790,32 @@ def _reconcile_weighted_interaction_score(conn: sqlite3.Connection, window_cutof
 def run_hot_score_refresh() -> int:
     with DB_LOCK:
         conn = db()
+        is_pg = KAIX_DB_BACKEND == "postgres"
+        reset_ok = True
         try:
+            if is_pg and KAIX_HOT_SCORE_STATEMENT_TIMEOUT_MS > 0:
+                # Tighten this background pass so it can never wedge a foreground
+                # write; on a lock/statement timeout it just skips the cycle.
+                conn.set_session_timeouts(
+                    KAIX_HOT_SCORE_STATEMENT_TIMEOUT_MS, KAIX_HOT_SCORE_LOCK_TIMEOUT_MS
+                )
             n = refresh_hot_scores(conn)
             conn.commit()
             return n
         finally:
-            conn.close()
+            if is_pg and KAIX_HOT_SCORE_STATEMENT_TIMEOUT_MS > 0:
+                # Restore the pooled defaults before this connection is reused, or
+                # drop it so no other request inherits the tightened budget.
+                try:
+                    conn.set_session_timeouts(
+                        KAIX_PG_STATEMENT_TIMEOUT_MS, KAIX_PG_LOCK_TIMEOUT_MS
+                    )
+                except Exception:
+                    reset_ok = False
+            if is_pg and not reset_ok:
+                conn.discard()
+            else:
+                conn.close()
 
 
 def start_hot_score_refresher() -> None:
@@ -18757,8 +18839,14 @@ def start_hot_score_refresher() -> None:
                 # pub/sub broadcast that refreshes every worker's board at once;
                 # in-process it just clears this (scheduler) instance's L1.
                 invalidate_public_ranking_caches()
-            except Exception:
-                ERR_LOG.exception("hot_score refresh failed")
+            except Exception as exc:
+                if _is_retryable_db_error(exc):
+                    # Lost a race with foreground writes (or ran out of its
+                    # tightened budget). The next cadence recovers, so this is a
+                    # skipped-cycle WARNING — never a paging ERROR digest line.
+                    ERR_LOG.warning("hot_score refresh skipped (db busy): %s", exc)
+                else:
+                    ERR_LOG.exception("hot_score refresh failed")
             # Piggyback the 热搜/热榜 rank snapshot on the refresher, but on its own
             # slower cadence (~10 min) — the ranks only need to be sampled often
             # enough for a meaningful delta, not every minute. Runs right after the
@@ -30322,6 +30410,29 @@ class Handler(BaseHTTPRequestHandler):
             # try to write an error body to an already-dead socket.
             status_code = 499
             ACCESS_LOG.info('%s "%s %s" 499 ip=%s client-disconnect', self._request_id, method, path, ip)
+        except sqlite3.OperationalError as exc:
+            if _is_retryable_db_error(exc):
+                # Transient write contention (PostgreSQL statement_timeout /
+                # lock_timeout / deadlock, or SQLite 'database is locked'): the
+                # correct answer is 503 "retry", NOT 500. Logging it at WARNING
+                # (not ERROR) keeps a load spike out of the paging email digest
+                # while the SLOW-request WARN line below still surfaces the hot
+                # endpoint. The iOS client retries a 503 with backoff.
+                status_code = 503
+                ERR_LOG.warning(
+                    '%s "%s %s" 503 db-busy ip=%s: %s',
+                    self._request_id, method, path, ip, exc,
+                )
+                self.send_error_json("服务器繁忙，请稍后再试", 503, "server_busy")
+            else:
+                status_code = 500
+                err_id = self._request_id
+                ERR_LOG.exception('%s "%s %s" 500 ip=%s', err_id, method, path, ip)
+                self.send_error_json(
+                    f"server error (request {err_id})" if PRODUCTION else f"{type(exc).__name__}: {exc}",
+                    500,
+                    "server_error",
+                )
         except Exception as exc:
             status_code = 500
             err_id = self._request_id
@@ -41777,7 +41888,18 @@ class Handler(BaseHTTPRequestHandler):
         viewer = self.current_session(conn)
         key = f"view:{post_id}:{viewer['user_id'] if viewer else self._client_ip()}"
         if _cache_get(key) is None:
-            conn.execute("UPDATE posts SET view_count = view_count + 1 WHERE id = ?", (post_id,))
+            # A view bump is a best-effort metric — the single highest-frequency
+            # foreground write on `posts`, so on a viral post dozens of viewers
+            # serialise on one row lock and contend with the hot_score refresher.
+            # It must NEVER fail a post open: swallow a transient contention
+            # timeout (as bump_post_counter does) instead of surfacing a 503. The
+            # hourly throttle is set regardless, so a hot post can't retry-storm.
+            try:
+                conn.execute("UPDATE posts SET view_count = view_count + 1 WHERE id = ?", (post_id,))
+            except sqlite3.OperationalError as exc:
+                if not _is_retryable_db_error(exc):
+                    raise
+                ERR_LOG.warning("view_count bump skipped (db busy) post=%s: %s", post_id, exc)
             _cache_put(key, True, ttl_seconds=3600)
         self.send_json({"ok": True})
 
@@ -43329,8 +43451,18 @@ class Handler(BaseHTTPRequestHandler):
         # is_read=false branch silently no-op'd those). a/b follows participant_a.
         manual_col = "manual_unread_a" if row["participant_a"] == user["id"] else "manual_unread_b"
         if is_read:
+            # `AND is_read = 0` is not a filter nicety — it is a lock-footprint
+            # fix. Without it every open of a thread rewrote (and row-locked)
+            # EVERY inbound message, even ones already read; on PostgreSQL
+            # (where DB_LOCK no longer serialises writes) two concurrent opens
+            # of the same thread — the notification tap firing /read while the
+            # ChatView's own read-receipt fires it too — collided on those rows
+            # and one side burned the 15s statement_timeout → 500. Scoping to
+            # the actually-unread rows makes a re-read touch zero rows and a
+            # fresh read touch only the new ones. Semantically identical.
             conn.execute(
-                "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ?",
+                "UPDATE messages SET is_read = 1 "
+                "WHERE conversation_id = ? AND sender_id != ? AND is_read = 0",
                 (conv_id, user["id"]),
             )
             conn.execute(
@@ -43341,6 +43473,7 @@ class Handler(BaseHTTPRequestHandler):
                    AND type = 'message'
                    AND target_conversation_id = ?
                    AND deleted_at IS NULL
+                   AND is_read = 0
                 """,
                 (user["id"], conv_id),
             )
